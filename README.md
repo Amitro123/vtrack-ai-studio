@@ -94,25 +94,25 @@ Navigate to **http://localhost:5173** and start editing!
 
 ## 🎯 Quick Start (Single Command)
 
-### Option 1: Using Startup Scripts
+### Using Startup Scripts
 
 **Windows (PowerShell)**:
 ```powershell
-.\start.ps1
+.\scripts\start.ps1
 ```
 
 **Windows (Batch)**:
 ```batch
-start.bat
+scripts\start.bat
 ```
 
 **Linux/Mac**:
 ```bash
-chmod +x start.sh
-./start.sh
+chmod +x scripts/start.sh
+./scripts/start.sh
 ```
 
-### Option 2: Using npm
+### Using npm
 
 ```bash
 npm install --save-dev concurrently
@@ -233,31 +233,34 @@ curl http://localhost:8000/api/health
 
 ```
 vtrack-ai-studio/
-├── backend/
+├── backend/                   # Backend API
 │   ├── server.py              # FastAPI app (SAM3 version)
 │   ├── sam3_integration.py    # SAM3 unified API
 │   ├── config.py              # Backend config
 │   ├── requirements.txt       # Python deps
 │   ├── SAM3_SETUP.md          # Setup guide
 │   ├── checkpoints/           # Model checkpoints
-│   │   └── sam3/              # SAM3 checkpoints
 │   ├── sam3/                  # SAM3 repository
 │   └── uploads/               # Temp uploads
-├── src/
+├── src/                       # Frontend source
 │   ├── lib/
 │   │   └── api.ts             # API client
 │   ├── pages/
 │   │   └── Index.tsx          # Main page
-│   ├── components/
-│   │   ├── VideoUploader.tsx  # Video upload
-│   │   ├── TabPanel.tsx       # 3 tabs UI
-│   │   ├── DownloadPanel.tsx  # File downloads
-│   │   └── ProcessingStatus.tsx # Progress
+│   ├── components/            # React components
 │   └── ...
-├── MIGRATION.md               # SAM2 → SAM3 migration guide
-├── package.json
-├── .env                       # API URL config
-└── README.md
+├── docs/                      # Documentation
+│   ├── spec.md                # Technical specification
+│   └── MIGRATION.md           # SAM2 → SAM3 migration guide
+├── scripts/                   # Utility scripts
+│   ├── start.ps1              # Windows PowerShell startup
+│   ├── start.bat              # Windows batch startup
+│   └── start.sh               # Linux/Mac startup
+├── public/                    # Static assets
+├── .env                       # Environment variables
+├── package.json               # Node dependencies
+├── vite.config.ts             # Vite configuration
+└── README.md                  # This file
 ```
 
 ## ⚙️ Configuration
@@ -324,9 +327,9 @@ wget -O backend/checkpoints/sam3/sam3_hiera_large.pt \
 
 ## 📚 Documentation
 
+- [Technical Specification](docs/spec.md) - Complete API and architecture docs
+- [Migration Guide](docs/MIGRATION.md) - Migrate from SAM2 to SAM3
 - [SAM3 Setup Guide](backend/SAM3_SETUP.md) - Detailed setup instructions
-- [Migration Guide](MIGRATION.md) - Migrate from SAM2 to SAM3
-- [spec.md](spec.md) - Technical specification
 
 ## 📄 License
 
