@@ -1,0 +1,30 @@
+# VTrackAI Studio Backend Requirements
+
+# FastAPI and server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+websockets>=12.0
+aiofiles>=23.2.1
+
+# CORS and middleware
+python-jose[cryptography]>=3.3.0
+
+# File handling
+python-magic>=0.4.27
+
+# All VTrackAI dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+opencv-python>=4.8.0
+pillow>=10.0.0
+numpy>=1.24.0
+
+# Audio processing
+demucs>=4.0.0
+librosa>=0.10.0
+soundfile>=0.12.0
+
+# Utilities
+tqdm>=4.66.0
+pyyaml>=6.0.0

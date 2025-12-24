@@ -10,9 +10,11 @@ interface DownloadPanelProps {
     masked?: boolean;
   };
   isProcessing: boolean;
+  videoUrl?: string;
+  audioUrl?: string;
 }
 
-const DownloadPanel = ({ hasResults, results, isProcessing }: DownloadPanelProps) => {
+const DownloadPanel = ({ hasResults, results, isProcessing, videoUrl, audioUrl }: DownloadPanelProps) => {
   const downloadItems = [
     {
       id: "video",
@@ -20,6 +22,7 @@ const DownloadPanel = ({ hasResults, results, isProcessing }: DownloadPanelProps
       icon: FileVideo,
       available: results.video,
       color: "text-primary",
+      url: videoUrl,
     },
     {
       id: "audio",
@@ -27,6 +30,7 @@ const DownloadPanel = ({ hasResults, results, isProcessing }: DownloadPanelProps
       icon: Music,
       available: results.audio,
       color: "text-accent",
+      url: audioUrl,
     },
     {
       id: "masked",
@@ -34,12 +38,20 @@ const DownloadPanel = ({ hasResults, results, isProcessing }: DownloadPanelProps
       icon: Video,
       available: results.masked,
       color: "text-primary",
+      url: videoUrl,
     },
   ];
 
-  const handleDownload = (type: string) => {
-    // Mock download - in production, this would fetch from the API
-    console.log(`Downloading ${type}...`);
+  const handleDownload = (url?: string, filename?: string) => {
+    if (!url) return;
+
+    // Create a temporary anchor element to trigger download
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   if (!hasResults && !isProcessing) {
@@ -77,8 +89,8 @@ const DownloadPanel = ({ hasResults, results, isProcessing }: DownloadPanelProps
             key={item.id}
             variant="outline"
             size="sm"
-            onClick={() => handleDownload(item.id)}
-            disabled={!item.available}
+            onClick={() => handleDownload(item.url, `${item.id}.${item.id === 'audio' ? 'wav' : 'mp4'}`)}
+            disabled={!item.available || !item.url}
             className={cn(
               "flex items-center gap-2 h-auto py-2.5 justify-start",
               item.available && "hover:border-primary/50"

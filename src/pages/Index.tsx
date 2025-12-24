@@ -5,6 +5,7 @@ import TabPanel from "@/components/TabPanel";
 import DownloadPanel from "@/components/DownloadPanel";
 import ProcessingStatus from "@/components/ProcessingStatus";
 import { useToast } from "@/hooks/use-toast";
+import { api } from "@/lib/api";
 
 interface ProcessingStep {
   id: string;
@@ -22,6 +23,7 @@ const Index = () => {
   const [chatMessages, setChatMessages] = useState<Array<{ role: "user" | "ai"; content: string }>>([]);
   const [results, setResults] = useState({ video: false, audio: false, masked: false });
   const [processingSteps, setProcessingSteps] = useState<ProcessingStep[]>([]);
+  const [resultUrls, setResultUrls] = useState<{ video?: string; audio?: string }>({});
 
   const handleVideoLoad = useCallback((file: File, url: string) => {
     setVideoFile(file);
@@ -29,7 +31,8 @@ const Index = () => {
     setMaskOverlay(null);
     setResults({ video: false, audio: false, masked: false });
     setChatMessages([]);
-    
+    setResultUrls({});
+
     toast({
       title: "Video loaded",
       description: `${file.name} ready for processing`,
@@ -42,37 +45,32 @@ const Index = () => {
     setIsProcessing(true);
     setMaskOverlay({ x, y, active: true });
 
-    setProcessingSteps([
-      { id: "sam2", label: "SAM2 point tracking", status: "processing" },
-      { id: "mask", label: "Generating mask overlay", status: "pending" },
-      { id: "track", label: "Tracking across frames", status: "pending" },
-    ]);
+    try {
+      // Call real backend API
+      const result = await api.trackPoint(videoFile, x, y, 0);
 
-    // Simulate SAM2 processing
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    setProcessingSteps((prev) =>
-      prev.map((s) =>
-        s.id === "sam2" ? { ...s, status: "complete" } : s.id === "mask" ? { ...s, status: "processing" } : s
-      )
-    );
+      // Update processing steps from backend
+      setProcessingSteps(result.processing_steps);
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setProcessingSteps((prev) =>
-      prev.map((s) =>
-        s.id === "mask" ? { ...s, status: "complete" } : s.id === "track" ? { ...s, status: "processing" } : s
-      )
-    );
+      // Set result video URL
+      const videoUrl = api.getFileUrl(result.masked_video_url);
+      setResultUrls((prev) => ({ ...prev, video: videoUrl }));
+      setResults((prev) => ({ ...prev, masked: true, video: true }));
 
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    setProcessingSteps((prev) => prev.map((s) => ({ ...s, status: "complete" })));
-
-    setResults((prev) => ({ ...prev, masked: true }));
-    setIsProcessing(false);
-
-    toast({
-      title: "Object tracked",
-      description: "SAM2 mask generated successfully",
-    });
+      toast({
+        title: "Object tracked",
+        description: "SAM2 mask generated successfully",
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to track object",
+        variant: "destructive",
+      });
+      setMaskOverlay(null);
+    } finally {
+      setIsProcessing(false);
+    }
   }, [videoFile, isProcessing, toast]);
 
   const handleChatSubmit = useCallback(async (message: string) => {
@@ -81,69 +79,49 @@ const Index = () => {
     setChatMessages((prev) => [...prev, { role: "user", content: message }]);
     setIsProcessing(true);
 
-    setProcessingSteps([
-      { id: "grounding", label: "GroundingDINO text→bbox", status: "processing" },
-      { id: "sam2", label: "SAM2 segmentation", status: "pending" },
-      { id: "demucs", label: "Demucs audio separation", status: "pending" },
-      { id: "highlight", label: "Generating highlights", status: "pending" },
-    ]);
+    try {
+      // Call real backend API
+      const result = await api.textToVideo(videoFile, message);
 
-    // Simulate GroundingDINO
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    setProcessingSteps((prev) =>
-      prev.map((s) =>
-        s.id === "grounding" ? { ...s, status: "complete" } : s.id === "sam2" ? { ...s, status: "processing" } : s
-      )
-    );
+      // Update processing steps from backend
+      setProcessingSteps(result.processing_steps);
 
-    // Simulate SAM2
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    setProcessingSteps((prev) =>
-      prev.map((s) =>
-        s.id === "sam2" ? { ...s, status: "complete" } : s.id === "demucs" ? { ...s, status: "processing" } : s
-      )
-    );
+      // Set result URLs
+      const videoUrl = api.getFileUrl(result.highlighted_video_url);
+      const audioUrl = api.getFileUrl(result.audio_url);
+      setResultUrls({ video: videoUrl, audio: audioUrl });
+      setResults((prev) => ({ ...prev, audio: true, video: true }));
 
-    // Simulate Demucs
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    setProcessingSteps((prev) =>
-      prev.map((s) =>
-        s.id === "demucs" ? { ...s, status: "complete" } : s.id === "highlight" ? { ...s, status: "processing" } : s
-      )
-    );
+      // Add AI response to chat
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          content: result.ai_response,
+        },
+      ]);
 
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    setProcessingSteps((prev) => prev.map((s) => ({ ...s, status: "complete" })));
+      toast({
+        title: "Processing complete",
+        description: "Audio and video results ready",
+      });
+    } catch (error) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          content: `❌ Error: ${error instanceof Error ? error.message : "Processing failed"}`,
+        },
+      ]);
 
-    // Simulate AI response
-    const responses: Record<string, string> = {
-      drums: "🥁 Drums isolated! Audio stem extracted and video regions highlighted.",
-      vocals: "🎤 Vocals extracted successfully! Audio and visual sync complete.",
-      guitar: "🎸 Guitar located and isolated. Audio stem ready for download.",
-      piano: "🎹 Piano identified and separated. Check the audio results!",
-    };
-
-    const matchedKey = Object.keys(responses).find((key) =>
-      message.toLowerCase().includes(key)
-    );
-
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        role: "ai",
-        content: matchedKey
-          ? responses[matchedKey]
-          : `✅ Processed "${message}". Found and isolated the matching elements.`,
-      },
-    ]);
-
-    setResults((prev) => ({ ...prev, audio: true, video: true }));
-    setIsProcessing(false);
-
-    toast({
-      title: "Processing complete",
-      description: "Audio and video results ready",
-    });
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to process",
+        variant: "destructive",
+      });
+    } finally {
+      setIsProcessing(false);
+    }
   }, [videoFile, isProcessing, toast]);
 
   const handleRemoveAction = useCallback(async () => {
@@ -158,49 +136,32 @@ const Index = () => {
 
     setIsProcessing(true);
 
-    setProcessingSteps([
-      { id: "track", label: "SAM2 temporal tracking", status: "processing" },
-      { id: "mask", label: "Generating removal mask", status: "pending" },
-      { id: "inpaint", label: "ProPainter inpainting", status: "pending" },
-      { id: "render", label: "Rendering final video", status: "pending" },
-    ]);
+    try {
+      // Call real backend API
+      const result = await api.removeObject(videoFile, maskOverlay.x, maskOverlay.y, 0);
 
-    // Simulate tracking
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    setProcessingSteps((prev) =>
-      prev.map((s) =>
-        s.id === "track" ? { ...s, status: "complete" } : s.id === "mask" ? { ...s, status: "processing" } : s
-      )
-    );
+      // Update processing steps from backend
+      setProcessingSteps(result.processing_steps);
 
-    // Simulate mask generation
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setProcessingSteps((prev) =>
-      prev.map((s) =>
-        s.id === "mask" ? { ...s, status: "complete" } : s.id === "inpaint" ? { ...s, status: "processing" } : s
-      )
-    );
+      // Set result video URL
+      const videoUrl = api.getFileUrl(result.inpainted_video_url);
+      setResultUrls((prev) => ({ ...prev, video: videoUrl }));
+      setResults((prev) => ({ ...prev, video: true }));
+      setMaskOverlay(null);
 
-    // Simulate inpainting (longer)
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    setProcessingSteps((prev) =>
-      prev.map((s) =>
-        s.id === "inpaint" ? { ...s, status: "complete" } : s.id === "render" ? { ...s, status: "processing" } : s
-      )
-    );
-
-    // Simulate rendering
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    setProcessingSteps((prev) => prev.map((s) => ({ ...s, status: "complete" })));
-
-    setResults((prev) => ({ ...prev, video: true }));
-    setMaskOverlay(null);
-    setIsProcessing(false);
-
-    toast({
-      title: "Object removed",
-      description: "Inpainted video ready for download",
-    });
+      toast({
+        title: "Object removed",
+        description: "Inpainted video ready for download",
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to remove object",
+        variant: "destructive",
+      });
+    } finally {
+      setIsProcessing(false);
+    }
   }, [videoFile, isProcessing, maskOverlay, toast]);
 
   return (
@@ -225,6 +186,8 @@ const Index = () => {
               hasResults={results.video || results.audio || results.masked}
               results={results}
               isProcessing={isProcessing}
+              videoUrl={resultUrls.video}
+              audioUrl={resultUrls.audio}
             />
           </div>
 
@@ -256,7 +219,7 @@ const Index = () => {
           <span className="font-mono">VTrackAI v1.0</span>
           <div className="flex items-center gap-4">
             <span>Max: 10s @ 480p</span>
-            <span className="text-accent">● CUDA Active</span>
+            <span className="text-accent">● Backend Connected</span>
           </div>
         </div>
       </footer>
