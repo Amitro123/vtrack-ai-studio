@@ -47,6 +47,35 @@ Frontend runs on **http://localhost:5173**
 
 Navigate to **http://localhost:5173** and start editing!
 
+## 🎯 Quick Start (Single Command)
+
+### Option 1: Using Startup Scripts
+
+**Windows (PowerShell)**:
+```powershell
+.\start.ps1
+```
+
+**Windows (Batch)**:
+```batch
+start.bat
+```
+
+**Linux/Mac**:
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+### Option 2: Using npm (requires concurrently)
+
+```bash
+npm install --save-dev concurrently
+npm run dev:all
+```
+
+This will start both backend and frontend in a single terminal.
+
 ## 📖 How to Use
 
 ### Step 1: Upload Video
