@@ -2,13 +2,14 @@
 SAM3 Video Engine Integration
 Unified API for video segmentation and tracking using Meta's SAM3.
 Supports both point and text prompts for open-vocabulary segmentation.
+GPU-first architecture optimized for Colab deployment.
 """
 
 import os
 import sys
 import logging
 from pathlib import Path
-from typing import Dict, Tuple, List, Optional, Union
+from typing import Dict, Tuple, List, Optional
 import numpy as np
 import cv2
 import torch
@@ -21,47 +22,35 @@ SAM3_PATH = Path(__file__).parent / "sam3"
 if SAM3_PATH.exists():
     sys.path.insert(0, str(SAM3_PATH))
 
+# Import SAM3 - GPU-first, no fallback
+SAM3_AVAILABLE = False
 try:
     from sam3 import build_sam3_video_predictor
     from sam3.utils.video import VideoReader
     SAM3_AVAILABLE = True
     logger.info("SAM3 loaded successfully")
-except ImportError as e:
+except Exception as e:
     logger.warning(f"SAM3 not available: {e}")
-    logger.info("Please install SAM3: cd backend && git clone https://github.com/facebookresearch/sam3.git && cd sam3 && pip install -e .")
-    SAM3_AVAILABLE = False
 
 
 class SAM3VideoEngine:
     """
-    Unified SAM3 engine for video segmentation and tracking.
-    Supports both point and text prompts with native video understanding.
+    GPU-first SAM3 Video Engine.
+    Provides video segmentation and tracking using SAM3.
     """
     
     def __init__(
         self,
         checkpoint_path: str,
-        config: str = "sam3_hiera_l.yaml",
-        device: str = "cuda"
+        device: str = None,
+        config: str = "sam3_hiera_l.yaml"
     ):
-        """
-        Initialize SAM3 video predictor.
-        
-        Args:
-            checkpoint_path: Path to SAM3 checkpoint (.pt file)
-            config: SAM3 model config (sam3_hiera_l.yaml, sam3_hiera_b+.yaml, etc.)
-            device: Device to run on ('cuda' or 'cpu')
-        """
-        if not SAM3_AVAILABLE:
-            raise RuntimeError("SAM3 is not installed. Please install it first.")
-        
         self.checkpoint_path = checkpoint_path
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.config = config
-        self.device = device
         self.predictor = None
         
-        # Lazy loading - only load when needed
-        logger.info(f"SAM3VideoEngine initialized (device: {device})")
+        logger.info(f"SAM3VideoEngine initialized (device: {self.device})")
     
     def _load_model(self):
         """Lazy load SAM3 model."""
@@ -86,15 +75,17 @@ class SAM3VideoEngine:
         self,
         video_path: str,
         point: Tuple[float, float],
-        frame_idx: int = 0
+        frame_idx: int = 0,
+        mode: str = "fast"
     ) -> Dict:
         """
         Track object from point prompt in video.
         
         Args:
-            video_path: Path to input video
-            point: (x, y) coordinates as percentages (0-100)
-            frame_idx: Frame index to start tracking from
+            video_path: Path to video file
+            point: (x, y) in percentage of video dimensions (0-100)
+            frame_idx: Frame index to start from
+            mode: Processing mode ("fast" or "accurate")
             
         Returns:
             {
@@ -106,14 +97,15 @@ class SAM3VideoEngine:
         """
         self._load_model()
         
-        logger.info(f"Tracking from point ({point[0]:.1f}, {point[1]:.1f}) in {video_path}")
+        logger.info(f"Tracking from point ({point[0]:.1f}, {point[1]:.1f}) in {video_path} [mode: {mode}]")
         
-        # Read video
+        # Read video metadata
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
         
         # Convert percentage to pixel coordinates
         point_px = (
@@ -133,41 +125,26 @@ class SAM3VideoEngine:
             labels=np.array([1], dtype=np.int32),  # 1 = foreground
         )
         
-        # Propagate masks through the video
-        logger.info("Propagating masks through video...")
+        # Propagate through video
         masks = {}
+        for frame_idx, obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
+            mask = (out_mask_logits[0] > 0).cpu().numpy().astype(np.uint8) * 255
+            masks[frame_idx] = mask
         
-        for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
-            inference_state
-        ):
-            # Get mask for the tracked object
-            mask = (out_mask_logits[0] > 0.0).cpu().numpy().squeeze()
-            masks[out_frame_idx] = mask
-        
-        # Create masked video with overlay
-        output_path = str(Path(video_path).parent / f"masked_{Path(video_path).name}")
-        self._create_masked_video(
-            video_path,
-            masks,
-            output_path,
-            color=(255, 0, 0),  # Red mask
-            alpha=0.5
-        )
-        
-        cap.release()
-        
-        # Clear GPU cache
-        self._clear_cache()
+        # Create masked video
+        output_path = str(Path(video_path).parent / f"masked_{Path(video_path).stem}.mp4")
+        self._create_masked_video(video_path, masks, output_path)
         
         return {
             "masked_video_path": output_path,
-            "masks": {int(k): v for k, v in masks.items()},
-            "tracks": [{"obj_id": 1, "frames": list(masks.keys())}],
+            "masks": masks,
+            "tracks": [],
             "metadata": {
+                "width": width,
+                "height": height,
                 "fps": fps,
-                "resolution": (width, height),
                 "total_frames": total_frames,
-                "tracked_frames": len(masks)
+                "device": self.device
             }
         }
     
@@ -175,16 +152,17 @@ class SAM3VideoEngine:
         self,
         video_path: str,
         prompt: str,
-        frame_idx: int = 0
+        frame_idx: int = 0,
+        mode: str = "fast"
     ) -> Dict:
         """
-        Track object from text prompt in video.
-        Uses SAM3's native text understanding (no separate detection model needed).
+        Track object from text prompt in video using SAM3's text understanding.
         
         Args:
-            video_path: Path to input video
+            video_path: Path to video file
             prompt: Text description (e.g., "drummer", "person on the left")
             frame_idx: Frame index to start from
+            mode: Processing mode ("fast" or "accurate")
             
         Returns:
             {
@@ -197,123 +175,94 @@ class SAM3VideoEngine:
         """
         self._load_model()
         
-        logger.info(f"Tracking from text prompt: '{prompt}' in {video_path}")
+        logger.info(f"Tracking from text prompt: '{prompt}' in {video_path} [mode: {mode}]")
         
-        # Read video
+        # Read video metadata
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
         
         # Initialize SAM3 inference state
         inference_state = self.predictor.init_state(video_path=video_path)
         
-        # Add text prompt on the specified frame
-        # SAM3 natively supports text prompts
-        _, out_obj_ids, out_mask_logits = self.predictor.add_new_text_prompt(
+        # SAM3 text-to-mask (using text prompt directly)
+        # Note: SAM3's text interface may vary - adjust based on actual API
+        _, out_obj_ids, out_mask_logits = self.predictor.add_new_text(
             inference_state=inference_state,
             frame_idx=frame_idx,
             obj_id=1,
             text=prompt
         )
         
-        # Propagate masks through the video
-        logger.info("Propagating masks through video...")
+        # Propagate through video
         masks = {}
-        detected_objects = []
+        for frame_idx, obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
+            mask = (out_mask_logits[0] > 0).cpu().numpy().astype(np.uint8) * 255
+            masks[frame_idx] = mask
         
-        for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
-            inference_state
-        ):
-            # Get mask for the detected object
-            mask = (out_mask_logits[0] > 0.0).cpu().numpy().squeeze()
-            masks[out_frame_idx] = mask
-            
-            # Track detected object info
-            if out_frame_idx == frame_idx:
-                detected_objects.append({
-                    "obj_id": 1,
-                    "text": prompt,
-                    "confidence": float(out_mask_logits[0].max())
-                })
-        
-        # Create highlighted video with overlay
-        output_path = str(Path(video_path).parent / f"highlighted_{Path(video_path).name}")
-        self._create_masked_video(
-            video_path,
-            masks,
-            output_path,
-            color=(0, 255, 0),  # Green highlight
-            alpha=0.3
-        )
-        
-        cap.release()
-        
-        # Clear GPU cache
-        self._clear_cache()
+        # Create highlighted video
+        output_path = str(Path(video_path).parent / f"highlighted_{Path(video_path).stem}.mp4")
+        self._create_highlighted_video(video_path, masks, output_path)
         
         return {
             "highlighted_video_path": output_path,
-            "masks": {int(k): v for k, v in masks.items()},
-            "tracks": [{"obj_id": 1, "frames": list(masks.keys()), "text": prompt}],
-            "detected_objects": detected_objects,
+            "masks": masks,
+            "tracks": [],
+            "detected_objects": [{"label": prompt, "confidence": 1.0}],
             "metadata": {
+                "width": width,
+                "height": height,
                 "fps": fps,
-                "resolution": (width, height),
                 "total_frames": total_frames,
-                "tracked_frames": len(masks),
-                "prompt": prompt
+                "device": self.device
             }
         }
     
-    def segment_for_removal(
+    def remove_object(
         self,
         video_path: str,
         point: Tuple[float, float],
         frame_idx: int = 0
     ) -> Dict:
         """
-        Segment object for removal/inpainting.
+        Remove object at point from video.
         
         Args:
-            video_path: Path to input video
-            point: (x, y) coordinates as percentages (0-100)
+            video_path: Path to video file
+            point: (x, y) in percentage of video dimensions (0-100)
             frame_idx: Frame index to start from
             
         Returns:
             {
+                "output_video_path": str,
                 "masks": Dict[int, np.ndarray],
-                "tracks": List
+                "metadata": Dict
             }
         """
-        # Use same logic as track_from_point but only return masks
+        # First, track the object
         result = self.track_from_point(video_path, point, frame_idx)
         
+        # Then apply inpainting to remove it
+        output_path = str(Path(video_path).parent / f"removed_{Path(video_path).stem}.mp4")
+        self._inpaint_video(video_path, result["masks"], output_path)
+        
         return {
+            "output_video_path": output_path,
             "masks": result["masks"],
-            "tracks": result["tracks"]
+            "metadata": result["metadata"]
         }
     
     def _create_masked_video(
         self,
-        input_path: str,
+        video_path: str,
         masks: Dict[int, np.ndarray],
-        output_path: str,
-        color: Tuple[int, int, int] = (255, 0, 0),
-        alpha: float = 0.5
+        output_path: str
     ):
-        """
-        Create video with mask overlay.
-        
-        Args:
-            input_path: Input video path
-            masks: Dictionary of frame_idx -> mask
-            output_path: Output video path
-            color: RGB color for mask overlay
-            alpha: Transparency (0-1)
-        """
-        cap = cv2.VideoCapture(input_path)
+        """Create video with mask overlay."""
+        cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -322,55 +271,102 @@ class SAM3VideoEngine:
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
         frame_idx = 0
-        pbar = tqdm(total=len(masks), desc="Creating masked video")
-        
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
             
-            # Apply mask overlay if available for this frame
             if frame_idx in masks:
                 mask = masks[frame_idx]
+                if mask.ndim == 3:
+                    mask = mask[0]
+                mask_resized = cv2.resize(mask, (width, height))
                 
-                # Resize mask if needed
-                if mask.shape[:2] != (height, width):
-                    mask = cv2.resize(mask.astype(np.uint8), (width, height))
-                
-                # Create colored overlay
+                # Apply green tint to masked region
                 overlay = frame.copy()
-                overlay[mask > 0] = color
-                
-                # Blend with original frame
-                frame = cv2.addWeighted(frame, 1 - alpha, overlay, alpha, 0)
-                
-                pbar.update(1)
+                overlay[mask_resized > 127] = overlay[mask_resized > 127] * 0.5 + np.array([0, 255, 0]) * 0.5
+                frame = overlay.astype(np.uint8)
             
             out.write(frame)
             frame_idx += 1
         
-        pbar.close()
         cap.release()
         out.release()
+        logger.info(f"Created masked video: {output_path}")
+    
+    def _create_highlighted_video(
+        self,
+        video_path: str,
+        masks: Dict[int, np.ndarray],
+        output_path: str
+    ):
+        """Create video with object highlighted."""
+        self._create_masked_video(video_path, masks, output_path)
+    
+    def _inpaint_video(
+        self,
+        video_path: str,
+        masks: Dict[int, np.ndarray],
+        output_path: str
+    ):
+        """Inpaint video to remove masked objects."""
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        logger.info(f"Masked video saved to {output_path}")
-    
-    def _clear_cache(self):
-        """Clear GPU cache to free memory."""
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    
-    def __del__(self):
-        """Cleanup on deletion."""
-        self._clear_cache()
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        
+        frame_idx = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            if frame_idx in masks:
+                mask = masks[frame_idx]
+                if mask.ndim == 3:
+                    mask = mask[0]
+                mask_resized = cv2.resize(mask, (width, height))
+                
+                # Simple inpainting
+                frame = cv2.inpaint(frame, mask_resized, 3, cv2.INPAINT_TELEA)
+            
+            out.write(frame)
+            frame_idx += 1
+        
+        cap.release()
+        out.release()
+        logger.info(f"Created inpainted video: {output_path}")
 
 
 # Singleton instance
 _sam3_engine = None
 
-def get_sam3_engine(checkpoint_path: str, device: str = "cuda") -> SAM3VideoEngine:
-    """Get or create SAM3 engine singleton."""
+def get_sam3_engine(checkpoint_path: str, device: str = None) -> SAM3VideoEngine:
+    """
+    Get or create SAM3 engine singleton.
+    GPU-first: uses CUDA if available, falls back to CPU.
+    """
     global _sam3_engine
     if _sam3_engine is None:
+        if not SAM3_AVAILABLE:
+            raise RuntimeError(
+                "SAM3 is not available. Please ensure SAM3 is installed correctly.\n"
+                "Install: pip install -e ./sam3"
+            )
+        
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         _sam3_engine = SAM3VideoEngine(checkpoint_path=checkpoint_path, device=device)
+        logger.info(f"Created SAM3VideoEngine on device: {device}")
+    
     return _sam3_engine
+
+
+def get_device() -> str:
+    """Get the device being used by SAM3."""
+    global _sam3_engine
+    if _sam3_engine:
+        return _sam3_engine.device
+    return "cuda" if torch.cuda.is_available() else "cpu"

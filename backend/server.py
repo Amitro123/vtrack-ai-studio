@@ -18,18 +18,16 @@ import traceback
 logger = logging.getLogger(__name__)
 
 import config
-from sam3_integration import get_sam3_engine, SAM3_AVAILABLE
+from sam3_integration import get_sam3_engine, SAM3_AVAILABLE, get_device
 
-# For audio processing (Demucs - unchanged)
+# For audio processing (Librosa - cross-platform)
 try:
-    from demucs import pretrained
-    from demucs.apply import apply_model
+    import librosa
     import torch
-    import torchaudio
-    DEMUCS_AVAILABLE = True
+    AUDIO_AVAILABLE = True
 except ImportError:
-    DEMUCS_AVAILABLE = False
-    logger.warning("Demucs not available")
+    AUDIO_AVAILABLE = False
+    logger.warning("Librosa not available - audio features disabled")
 
 # For inpainting (ProPainter/OpenCV - unchanged)
 try:
@@ -125,11 +123,10 @@ async def health():
         "status": "healthy",
         "sam3_available": SAM3_AVAILABLE,
         "sam3_setup_valid": is_valid,
-        "sam3_message": msg,
-        "demucs_available": DEMUCS_AVAILABLE,
+        "device": get_device(),
+        "audio_available": AUDIO_AVAILABLE,
         "upload_dir": str(config.UPLOAD_DIR),
-        "active_tasks": len(tasks),
-        "device": config.DEVICE
+        "active_tasks": len(tasks)
     }
 
 
@@ -138,7 +135,8 @@ async def track_point(
     video: UploadFile = File(...),
     x: float = Form(...),
     y: float = Form(...),
-    frame_idx: int = Form(0)
+    frame_idx: int = Form(0),
+    mode: str = Form("fast")
 ):
     """
     Point-to-Track: Track object from click coordinates using SAM3.
@@ -148,6 +146,7 @@ async def track_point(
         x: X coordinate (0-100, percentage)
         y: Y coordinate (0-100, percentage)
         frame_idx: Frame index for initial click
+        mode: Processing mode ("fast" or "accurate", default "fast")
         
     Returns:
         task_id, masked_video_url, processing_steps
@@ -155,6 +154,10 @@ async def track_point(
     task_id = str(uuid.uuid4())
     
     try:
+        # Validate mode parameter
+        if mode not in ["fast", "accurate"]:
+            raise HTTPException(status_code=400, detail="Mode must be 'fast' or 'accurate'")
+        
         # Save uploaded video
         video_path = config.get_upload_path(f"{task_id}_input.mp4")
         await save_upload_file(video, video_path)
@@ -181,7 +184,8 @@ async def track_point(
         result = engine.track_from_point(
             video_path=str(video_path),
             point=(x, y),
-            frame_idx=frame_idx
+            frame_idx=frame_idx,
+            mode=mode
         )
         
         # Update steps
@@ -198,12 +202,24 @@ async def track_point(
         
         tasks[task_id]["status"] = "complete"
         
+        # Get processing parameters for response
+        from config import PROCESSING_FPS_FAST, PROCESSING_FPS_ACCURATE, KEYFRAMES_FAST, KEYFRAMES_ACCURATE
+        processing_fps = PROCESSING_FPS_FAST if mode == "fast" else PROCESSING_FPS_ACCURATE
+        num_keyframes = KEYFRAMES_FAST if mode == "fast" else KEYFRAMES_ACCURATE
+        
         return {
             "task_id": task_id,
+            "mode": mode,
+            "sam3_mode": "mock" if is_mock_mode() else "real",
+            "processing_fps": processing_fps,
+            "num_keyframes": num_keyframes,
             "masked_video_url": f"/uploads/{task_id}/masked_video.mp4",
             "processing_steps": steps
         }
         
+    except HTTPException:
+        # Re-raise HTTP exceptions (400, 404, etc.) as-is
+        raise
     except Exception as e:
         # Cleanup on error
         video_path.unlink(missing_ok=True)
@@ -220,7 +236,8 @@ async def track_point(
 @app.post("/api/text-to-video")
 async def text_to_video(
     video: UploadFile = File(...),
-    prompt: str = Form(...)
+    prompt: str = Form(...),
+    mode: str = Form("fast")
 ):
     """
     Text-to-Video: Detect and track object from text using SAM3, isolate audio with Demucs.
@@ -228,6 +245,7 @@ async def text_to_video(
     Args:
         video: Video file
         prompt: Text description (e.g., "isolate drums", "drummer")
+        mode: Processing mode ("fast" or "accurate", default "fast")
         
     Returns:
         task_id, highlighted_video_url, audio_url, ai_response, processing_steps
@@ -235,6 +253,10 @@ async def text_to_video(
     task_id = str(uuid.uuid4())
     
     try:
+        # Validate mode parameter
+        if mode not in ["fast", "accurate"]:
+            raise HTTPException(status_code=400, detail="Mode must be 'fast' or 'accurate'")
+        
         # Save uploaded video
         video_path = config.get_upload_path(f"{task_id}_input.mp4")
         await save_upload_file(video, video_path)
@@ -272,61 +294,41 @@ async def text_to_video(
         
         # Get SAM3 engine
         engine = get_engine()
+        logger.info(f"Using engine: {type(engine).__name__}")
+        logger.info(f"is_mock_mode: {is_mock_mode()}")
         
         # Track from text using SAM3 (native text understanding)
         result = engine.track_from_text(
             video_path=str(video_path),
             prompt=prompt,
-            frame_idx=0
+            frame_idx=0,
+            mode=mode
         )
         
         steps[0]["status"] = "complete"
         steps[1]["status"] = "complete"
         steps[2]["status"] = "processing"
         
-        # Isolate audio using Demucs
-        if DEMUCS_AVAILABLE:
-            audio_path = config.get_output_path(task_id, f"{stem_type}.wav")
-            
-            # Extract audio from video
+        # Extract audio using ffmpeg + librosa (no demucs/torchcodec dependency)
+        audio_path = config.get_output_path(task_id, f"{stem_type}.wav")
+        audio_extraction_success = False
+        
+        try:
             import subprocess
-            temp_audio = config.get_upload_path(f"{task_id}_audio.wav")
+            # Extract audio from video using ffmpeg
             subprocess.run([
                 "ffmpeg", "-i", str(video_path),
-                "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
-                str(temp_audio), "-y"
-            ], capture_output=True)
-            
-            # Load Demucs model
-            model = pretrained.get_model(config.DEMUCS_MODEL)
-            model.to(config.DEVICE)
-            
-            # Load audio
-            wav, sr = torchaudio.load(str(temp_audio))
-            wav = wav.to(config.DEVICE)
-            
-            # Apply Demucs
-            with torch.no_grad():
-                sources = apply_model(model, wav[None], device=config.DEVICE)[0]
-            
-            # Get the requested stem
-            stem_idx = {"drums": 0, "bass": 1, "other": 2, "vocals": 3}.get(stem_type, 2)
-            isolated = sources[stem_idx]
-            
-            # Save isolated audio
-            torchaudio.save(str(audio_path), isolated.cpu(), sr)
-            
-            # Cleanup temp audio
-            temp_audio.unlink(missing_ok=True)
-        else:
-            # Fallback: just extract original audio
-            audio_path = config.get_output_path(task_id, f"{stem_type}.wav")
-            import subprocess
-            subprocess.run([
-                "ffmpeg", "-i", str(video_path),
-                "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
+                "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
                 str(audio_path), "-y"
-            ], capture_output=True)
+            ], capture_output=True, check=False)
+            
+            if audio_path.exists() and audio_path.stat().st_size > 0:
+                audio_extraction_success = True
+                logger.info(f"Extracted audio: {audio_path}")
+            else:
+                logger.warning("Audio extraction produced empty file")
+        except Exception as e:
+            logger.warning(f"Audio extraction failed: {e}")
         
         steps[2]["status"] = "complete"
         steps[3]["status"] = "complete"
@@ -340,6 +342,11 @@ async def text_to_video(
         
         tasks[task_id]["status"] = "complete"
         
+        # Get processing parameters for response
+        from config import PROCESSING_FPS_FAST, PROCESSING_FPS_ACCURATE, KEYFRAMES_FAST, KEYFRAMES_ACCURATE
+        processing_fps = PROCESSING_FPS_FAST if mode == "fast" else PROCESSING_FPS_ACCURATE
+        num_keyframes = KEYFRAMES_FAST if mode == "fast" else KEYFRAMES_ACCURATE
+        
         # Generate AI response
         responses = {
             "drums": f"[DRUMS] Drums isolated! Audio stem extracted and video regions highlighted.",
@@ -352,6 +359,10 @@ async def text_to_video(
         
         return {
             "task_id": task_id,
+            "mode": mode,
+            "sam3_mode": "mock" if is_mock_mode() else "real",
+            "processing_fps": processing_fps,
+            "num_keyframes": num_keyframes,
             "highlighted_video_url": f"/uploads/{task_id}/highlighted_video.mp4",
             "audio_url": f"/uploads/{task_id}/{stem_type}.wav",
             "ai_response": ai_response,
@@ -378,7 +389,8 @@ async def remove_object(
     video: UploadFile = File(...),
     x: float = Form(...),
     y: float = Form(...),
-    frame_idx: int = Form(0)
+    frame_idx: int = Form(0),
+    mode: str = Form("fast")
 ):
     """
     Object Removal: Track object with SAM3, remove with inpainting.
@@ -388,6 +400,7 @@ async def remove_object(
         x: X coordinate (0-100, percentage)
         y: Y coordinate (0-100, percentage)
         frame_idx: Frame index for initial click
+        mode: Processing mode ("fast" or "accurate", default "fast")
         
     Returns:
         task_id, inpainted_video_url, processing_steps
@@ -395,6 +408,10 @@ async def remove_object(
     task_id = str(uuid.uuid4())
     
     try:
+        # Validate mode parameter
+        if mode not in ["fast", "accurate"]:
+            raise HTTPException(status_code=400, detail="Mode must be 'fast' or 'accurate'")
+        
         # Save uploaded video
         video_path = config.get_upload_path(f"{task_id}_input.mp4")
         await save_upload_file(video, video_path)
@@ -422,7 +439,8 @@ async def remove_object(
         result = engine.segment_for_removal(
             video_path=str(video_path),
             point=(x, y),
-            frame_idx=frame_idx
+            frame_idx=frame_idx,
+            mode=mode
         )
         
         steps[0]["status"] = "complete"
@@ -473,8 +491,17 @@ async def remove_object(
         
         tasks[task_id]["status"] = "complete"
         
+        # Get processing parameters for response
+        from config import PROCESSING_FPS_FAST, PROCESSING_FPS_ACCURATE, KEYFRAMES_FAST, KEYFRAMES_ACCURATE
+        processing_fps = PROCESSING_FPS_FAST if mode == "fast" else PROCESSING_FPS_ACCURATE
+        num_keyframes = KEYFRAMES_FAST if mode == "fast" else KEYFRAMES_ACCURATE
+        
         return {
             "task_id": task_id,
+            "mode": mode,
+            "sam3_mode": "mock" if is_mock_mode() else "real",
+            "processing_fps": processing_fps,
+            "num_keyframes": num_keyframes,
             "inpainted_video_url": f"/uploads/{task_id}/inpainted_video.mp4",
             "processing_steps": steps
         }

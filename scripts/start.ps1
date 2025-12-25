@@ -24,6 +24,8 @@ Write-Host "[BACKEND] Starting Backend (FastAPI)..." -ForegroundColor Yellow
 $backendJob = Start-Job -ScriptBlock {
     Set-Location $using:PWD
     Set-Location backend
+    # Activate conda environment and start server
+    conda activate sam3
     python server.py
 }
 

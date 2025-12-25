@@ -1,33 +1,28 @@
-# VTrackAI Studio Backend Requirements (SAM3 Version)
+# VTrackAI Studio Backend - GPU Dependencies
+# Minimal requirements for Colab/GPU deployment
 
-# FastAPI and server
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
+# Web Framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
 python-multipart>=0.0.6
-aiofiles>=23.2.1
 
-# PyTorch (SAM3 requirements)
-# Install separately with CUDA support:
-# pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
-torch>=2.7.0
-torchvision>=0.18.0
-torchaudio>=2.7.0
+# Video Processing
+opencv-python>=4.8.0
+
+# Audio Processing (cross-platform, no torchcodec)
+librosa>=0.10.0
+
+# ML Framework
+torch>=2.0.0
+numpy>=1.24.0
+tqdm>=4.65.0
+
+# Model Hub
+huggingface_hub>=0.16.0
+
+# Colab Deployment (optional)
+pyngrok>=6.0.0
+nest-asyncio>=1.5.0
 
 # SAM3 (install separately)
-# cd backend
-# git clone https://github.com/facebookresearch/sam3.git
-# cd sam3 && pip install -e .
-
-# Audio processing (unchanged)
-demucs>=4.0.0
-librosa>=0.10.0
-soundfile>=0.12.0
-
-# Video processing
-opencv-python>=4.8.0
-pillow>=10.0.0
-numpy>=1.24.0
-
-# Utilities
-tqdm>=4.66.0
-pyyaml>=6.0.0
+# pip install -e ./sam3

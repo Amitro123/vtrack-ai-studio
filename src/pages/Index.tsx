@@ -4,6 +4,7 @@ import VideoUploader from "@/components/VideoUploader";
 import TabPanel from "@/components/TabPanel";
 import DownloadPanel from "@/components/DownloadPanel";
 import ProcessingStatus from "@/components/ProcessingStatus";
+import ProcessingModeToggle from "@/components/ProcessingModeToggle";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 
@@ -19,6 +20,7 @@ const Index = () => {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"click" | "chat" | "remove">("click");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingMode, setProcessingMode] = useState<"fast" | "accurate">("fast");
   const [maskOverlay, setMaskOverlay] = useState<{ x: number; y: number; active: boolean } | null>(null);
   const [chatMessages, setChatMessages] = useState<Array<{ role: "user" | "ai"; content: string }>>([]);
   const [results, setResults] = useState({ video: false, audio: false, masked: false });
@@ -46,8 +48,8 @@ const Index = () => {
     setMaskOverlay({ x, y, active: true });
 
     try {
-      // Call real backend API
-      const result = await api.trackPoint(videoFile, x, y, 0);
+      // Call real backend API with processing mode
+      const result = await api.trackPoint(videoFile, x, y, 0, processingMode);
 
       // Update processing steps from backend
       setProcessingSteps(result.processing_steps);
@@ -80,8 +82,8 @@ const Index = () => {
     setIsProcessing(true);
 
     try {
-      // Call real backend API
-      const result = await api.textToVideo(videoFile, message);
+      // Call real backend API with processing mode
+      const result = await api.textToVideo(videoFile, message, processingMode);
 
       // Update processing steps from backend
       setProcessingSteps(result.processing_steps);
@@ -137,8 +139,8 @@ const Index = () => {
     setIsProcessing(true);
 
     try {
-      // Call real backend API
-      const result = await api.removeObject(videoFile, maskOverlay.x, maskOverlay.y, 0);
+      // Call real backend API with processing mode
+      const result = await api.removeObject(videoFile, maskOverlay.x, maskOverlay.y, 0, processingMode);
 
       // Update processing steps from backend
       setProcessingSteps(result.processing_steps);
@@ -193,6 +195,13 @@ const Index = () => {
 
           {/* Right: Tabs + Processing */}
           <div className="flex flex-col gap-4">
+            {/* Processing Mode Toggle */}
+            <ProcessingModeToggle
+              mode={processingMode}
+              onModeChange={setProcessingMode}
+              disabled={isProcessing}
+            />
+
             <div className="flex-1 min-h-[400px]">
               <TabPanel
                 activeTab={activeTab}

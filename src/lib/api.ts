@@ -31,21 +31,33 @@ export interface RemoveObjectResponse {
   processing_steps: ProcessingStep[];
 }
 
+export interface HealthResponse {
+  status: string;
+  sam3_available: boolean;
+  sam3_setup_valid: boolean;
+  device: string;
+  audio_available: boolean;
+  upload_dir: string;
+  active_tasks: number;
+}
+
 export const api = {
   /**
-   * Track object from point click using SAM2
+   * Track object from point click using SAM3
    */
   async trackPoint(
     video: File,
     x: number,
     y: number,
-    frameIdx: number = 0
+    frameIdx: number = 0,
+    mode: 'fast' | 'accurate' = 'fast'
   ): Promise<TrackPointResponse> {
     const formData = new FormData();
     formData.append('video', video);
     formData.append('x', x.toString());
     formData.append('y', y.toString());
     formData.append('frame_idx', frameIdx.toString());
+    formData.append('mode', mode);
 
     const response = await fetch(`${API_BASE_URL}/api/track-point`, {
       method: 'POST',
@@ -61,15 +73,17 @@ export const api = {
   },
 
   /**
-   * Process video with text prompt using GroundingDINO + SAM2 + Demucs
+   * Process video with text prompt using SAM3 + Demucs
    */
   async textToVideo(
     video: File,
-    prompt: string
+    prompt: string,
+    mode: 'fast' | 'accurate' = 'fast'
   ): Promise<TextToVideoResponse> {
     const formData = new FormData();
     formData.append('video', video);
     formData.append('prompt', prompt);
+    formData.append('mode', mode);
 
     const response = await fetch(`${API_BASE_URL}/api/text-to-video`, {
       method: 'POST',
@@ -85,19 +99,21 @@ export const api = {
   },
 
   /**
-   * Remove object using SAM2 + ProPainter
+   * Remove object using SAM3 + inpainting
    */
   async removeObject(
     video: File,
     x: number,
     y: number,
-    frameIdx: number = 0
+    frameIdx: number = 0,
+    mode: 'fast' | 'accurate' = 'fast'
   ): Promise<RemoveObjectResponse> {
     const formData = new FormData();
     formData.append('video', video);
     formData.append('x', x.toString());
     formData.append('y', y.toString());
     formData.append('frame_idx', frameIdx.toString());
+    formData.append('mode', mode);
 
     const response = await fetch(`${API_BASE_URL}/api/remove-object`, {
       method: 'POST',
@@ -136,7 +152,15 @@ export const api = {
   },
 
   /**
-   * Health check
+   * Get health status
+   */
+  async getHealth(): Promise<HealthResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/health`);
+    return response.json();
+  },
+
+  /**
+   * Health check (legacy)
    */
   async healthCheck(): Promise<any> {
     const response = await fetch(`${API_BASE_URL}/api/health`);

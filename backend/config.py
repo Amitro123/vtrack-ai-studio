@@ -20,21 +20,29 @@ CHECKPOINTS_DIR.mkdir(exist_ok=True)
 HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
 PORT = int(os.getenv("BACKEND_PORT", 8000))
 CORS_ORIGINS = [
-    "http://localhost:5173",  # Vite dev server
+    "http://localhost:5173",  # Vite dev server (default)
+    "http://localhost:8080",  # Vite dev server (actual port)
     "http://localhost:3000",  # Alternative
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:8080",
     "http://127.0.0.1:3000",
 ]
 
 # File upload constraints
 MAX_FILE_SIZE_MB = 100
 MAX_VIDEO_DURATION = 10  # seconds
-MAX_RESOLUTION = (854, 480)  # 480p
+MAX_RESOLUTION = (1280, 720)  # 720p
 SUPPORTED_FORMATS = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
 
 # Processing settings
 CLEANUP_AFTER_HOURS = 24  # Auto-delete old files after 24 hours
 ENABLE_PROGRESS_TRACKING = True
+
+# Processing modes (for SAM3 optimization)
+PROCESSING_FPS_FAST = 5.0       # Fast mode: 5 FPS processing
+PROCESSING_FPS_ACCURATE = 10.0  # Accurate mode: 10 FPS processing
+KEYFRAMES_FAST = 12             # Fast mode: 12 keyframes
+KEYFRAMES_ACCURATE = 32         # Accurate mode: 32 keyframes
 
 # SAM3 settings
 SAM3_CHECKPOINT = CHECKPOINTS_DIR / "sam3" / "sam3_hiera_large.pt"

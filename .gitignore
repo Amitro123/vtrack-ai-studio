@@ -7,18 +7,54 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment variables
+.env
+.env.local
+.env*.local
+
+# Testing
+coverage/
+.pytest_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.coverage
+htmlcov/
+*.egg-info/
+
+# Production
 dist
 dist-ssr
 *.local
 
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+.vscode/
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# SAM3 (installed fresh by Colab notebook)
+backend/sam3/
+
+# Model checkpoints (large files, downloaded per environment)
+backend/checkpoints/
+checkpoints/
+
+# Uploads (user data, not committed)
+backend/uploads/
+uploads/
+
+# Test artifacts
+backend/test_video.mp4
