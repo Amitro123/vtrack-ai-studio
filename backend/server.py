@@ -3,6 +3,7 @@ VTrackAI Studio FastAPI Backend Server (SAM3 Version)
 Provides REST API endpoints for video processing using SAM3.
 """
 
+import logging
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -13,6 +14,8 @@ import shutil
 import asyncio
 from typing import Optional, List, Dict
 import traceback
+
+logger = logging.getLogger(__name__)
 
 import config
 from sam3_integration import get_sam3_engine, SAM3_AVAILABLE
@@ -26,7 +29,7 @@ try:
     DEMUCS_AVAILABLE = True
 except ImportError:
     DEMUCS_AVAILABLE = False
-    print("⚠️  Demucs not available")
+    logger.warning("Demucs not available")
 
 # For inpainting (ProPainter/OpenCV - unchanged)
 try:
@@ -206,8 +209,7 @@ async def track_point(
         video_path.unlink(missing_ok=True)
         tasks[task_id] = {"status": "error", "error": str(e)}
         
-        print(f"Error in track-point: {e}")
-        traceback.print_exc()
+        logger.error(f"Error in track-point: {e}", exc_info=True)
         
         raise HTTPException(
             status_code=500,
@@ -340,10 +342,10 @@ async def text_to_video(
         
         # Generate AI response
         responses = {
-            "drums": f"🥁 Drums isolated! Audio stem extracted and video regions highlighted.",
-            "vocals": f"🎤 Vocals extracted successfully! Audio and visual sync complete.",
-            "bass": f"🎸 Bass located and isolated. Audio stem ready for download.",
-            "other": f"✅ Processed \"{prompt}\". Found and isolated the matching elements."
+            "drums": f"[DRUMS] Drums isolated! Audio stem extracted and video regions highlighted.",
+            "vocals": f"[VOCALS] Vocals extracted successfully! Audio and visual sync complete.",
+            "bass": f"[BASS] Bass located and isolated. Audio stem ready for download.",
+            "other": f"[SUCCESS] Processed \"{prompt}\". Found and isolated the matching elements."
         }
         
         ai_response = responses.get(stem_type, responses["other"])
@@ -363,8 +365,7 @@ async def text_to_video(
         video_path.unlink(missing_ok=True)
         tasks[task_id] = {"status": "error", "error": str(e)}
         
-        print(f"Error in text-to-video: {e}")
-        traceback.print_exc()
+        logger.error(f"Error in text-to-video: {e}", exc_info=True)
         
         raise HTTPException(
             status_code=500,
@@ -483,8 +484,7 @@ async def remove_object(
         video_path.unlink(missing_ok=True)
         tasks[task_id] = {"status": "error", "error": str(e)}
         
-        print(f"Error in remove-object: {e}")
-        traceback.print_exc()
+        logger.error(f"Error in remove-object: {e}", exc_info=True)
         
         raise HTTPException(
             status_code=500,
@@ -504,21 +504,27 @@ async def get_task_status(task_id: str):
 if __name__ == "__main__":
     import uvicorn
     
-    print("=" * 60)
-    print("🚀 VTrackAI Studio Backend Server (SAM3)")
-    print("=" * 60)
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    logger.info("=" * 60)
+    logger.info("VTrackAI Studio Backend Server (SAM3)")
+    logger.info("=" * 60)
     
     # Validate SAM3 setup
     is_valid, msg = config.validate_sam3_setup()
-    print(msg)
+    logger.info(msg)
     
     if not is_valid:
-        print("\n⚠️  SAM3 setup incomplete. Some features may not work.")
-        print("Please follow setup instructions in README.md")
+        logger.warning("SAM3 setup incomplete. Some features may not work.")
+        logger.info("Please follow setup instructions in README.md")
     
-    print(f"Upload Directory: {config.UPLOAD_DIR}")
-    print(f"Server: http://{config.HOST}:{config.PORT}")
-    print("=" * 60)
+    logger.info(f"Upload Directory: {config.UPLOAD_DIR}")
+    logger.info(f"Server: http://{config.HOST}:{config.PORT}")
+    logger.info("=" * 60)
     
     uvicorn.run(
         app,

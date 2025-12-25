@@ -2,23 +2,23 @@
 # Runs both backend and frontend concurrently
 
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "🚀 VTrackAI Studio - Starting Backend & Frontend" -ForegroundColor Cyan
+Write-Host "[START] VTrackAI Studio - Starting Backend & Frontend" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 
 # Check if we're in the right directory
 if (-not (Test-Path "package.json")) {
-    Write-Host "❌ Error: package.json not found. Please run this script from the vtrack-ai-studio root directory." -ForegroundColor Red
+    Write-Host "[ERROR] package.json not found. Please run this script from the vtrack-ai-studio root directory." -ForegroundColor Red
     exit 1
 }
 
 # Check if backend directory exists
 if (-not (Test-Path "backend")) {
-    Write-Host "❌ Error: backend directory not found." -ForegroundColor Red
+    Write-Host "[ERROR] backend directory not found." -ForegroundColor Red
     exit 1
 }
 
 Write-Host ""
-Write-Host "📦 Starting Backend (FastAPI)..." -ForegroundColor Yellow
+Write-Host "[BACKEND] Starting Backend (FastAPI)..." -ForegroundColor Yellow
 
 # Start backend in new window
 $backendJob = Start-Job -ScriptBlock {
@@ -31,7 +31,7 @@ $backendJob = Start-Job -ScriptBlock {
 Start-Sleep -Seconds 3
 
 Write-Host ""
-Write-Host "🎨 Starting Frontend (Vite)..." -ForegroundColor Yellow
+Write-Host "[FRONTEND] Starting Frontend (Vite)..." -ForegroundColor Yellow
 
 # Start frontend in new window
 $frontendJob = Start-Job -ScriptBlock {
@@ -41,7 +41,7 @@ $frontendJob = Start-Job -ScriptBlock {
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Green
-Write-Host "✅ Both servers started!" -ForegroundColor Green
+Write-Host "[SUCCESS] Both servers started!" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host "Backend:  http://localhost:8000" -ForegroundColor White
 Write-Host "Frontend: http://localhost:5173" -ForegroundColor White
@@ -75,8 +75,8 @@ try {
 }
 finally {
     Write-Host ""
-    Write-Host "🛑 Shutting down servers..." -ForegroundColor Yellow
+    Write-Host "[STOP] Shutting down servers..." -ForegroundColor Yellow
     Stop-Job -Job $backendJob, $frontendJob
     Remove-Job -Job $backendJob, $frontendJob
-    Write-Host "✅ Servers stopped." -ForegroundColor Green
+    Write-Host "[SUCCESS] Servers stopped." -ForegroundColor Green
 }

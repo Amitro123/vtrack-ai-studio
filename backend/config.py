@@ -88,6 +88,6 @@ def validate_sam3_setup() -> tuple[bool, str]:
     
     # Check CUDA availability
     if DEVICE == "cpu":
-        return True, "⚠️  Running on CPU (slow). GPU recommended for SAM3."
+        return True, "[WARNING] Running on CPU (slow). GPU recommended for SAM3."
     
-    return True, f"✅ SAM3 setup valid (device: {DEVICE}, VRAM: {MAX_VRAM_GB}GB)"
+    return True, f"[SUCCESS] SAM3 setup valid (device: {DEVICE}, VRAM: {MAX_VRAM_GB}GB)"

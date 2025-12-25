@@ -6,12 +6,15 @@ Supports both point and text prompts for open-vocabulary segmentation.
 
 import os
 import sys
+import logging
 from pathlib import Path
 from typing import Dict, Tuple, List, Optional, Union
 import numpy as np
 import cv2
 import torch
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 # Add SAM3 to path
 SAM3_PATH = Path(__file__).parent / "sam3"
@@ -22,10 +25,10 @@ try:
     from sam3 import build_sam3_video_predictor
     from sam3.utils.video import VideoReader
     SAM3_AVAILABLE = True
-    print("✅ SAM3 loaded successfully")
+    logger.info("SAM3 loaded successfully")
 except ImportError as e:
-    print(f"⚠️  SAM3 not available: {e}")
-    print(f"   Please install SAM3: cd backend && git clone https://github.com/facebookresearch/sam3.git && cd sam3 && pip install -e .")
+    logger.warning(f"SAM3 not available: {e}")
+    logger.info("Please install SAM3: cd backend && git clone https://github.com/facebookresearch/sam3.git && cd sam3 && pip install -e .")
     SAM3_AVAILABLE = False
 
 
@@ -58,12 +61,12 @@ class SAM3VideoEngine:
         self.predictor = None
         
         # Lazy loading - only load when needed
-        print(f"SAM3VideoEngine initialized (device: {device})")
+        logger.info(f"SAM3VideoEngine initialized (device: {device})")
     
     def _load_model(self):
         """Lazy load SAM3 model."""
         if self.predictor is None:
-            print(f"Loading SAM3 model from {self.checkpoint_path}...")
+            logger.info(f"Loading SAM3 model from {self.checkpoint_path}...")
             
             if not Path(self.checkpoint_path).exists():
                 raise FileNotFoundError(
@@ -77,7 +80,7 @@ class SAM3VideoEngine:
                 device=self.device
             )
             
-            print("✅ SAM3 model loaded")
+            logger.info("SAM3 model loaded successfully")
     
     def track_from_point(
         self,
@@ -103,7 +106,7 @@ class SAM3VideoEngine:
         """
         self._load_model()
         
-        print(f"Tracking from point ({point[0]:.1f}, {point[1]:.1f}) in {video_path}")
+        logger.info(f"Tracking from point ({point[0]:.1f}, {point[1]:.1f}) in {video_path}")
         
         # Read video
         cap = cv2.VideoCapture(video_path)
@@ -131,7 +134,7 @@ class SAM3VideoEngine:
         )
         
         # Propagate masks through the video
-        print("Propagating masks through video...")
+        logger.info("Propagating masks through video...")
         masks = {}
         
         for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
@@ -194,7 +197,7 @@ class SAM3VideoEngine:
         """
         self._load_model()
         
-        print(f"Tracking from text prompt: '{prompt}' in {video_path}")
+        logger.info(f"Tracking from text prompt: '{prompt}' in {video_path}")
         
         # Read video
         cap = cv2.VideoCapture(video_path)
@@ -216,7 +219,7 @@ class SAM3VideoEngine:
         )
         
         # Propagate masks through the video
-        print("Propagating masks through video...")
+        logger.info("Propagating masks through video...")
         masks = {}
         detected_objects = []
         
@@ -350,7 +353,7 @@ class SAM3VideoEngine:
         cap.release()
         out.release()
         
-        print(f"✅ Masked video saved to {output_path}")
+        logger.info(f"Masked video saved to {output_path}")
     
     def _clear_cache(self):
         """Clear GPU cache to free memory."""
