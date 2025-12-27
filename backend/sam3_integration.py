@@ -24,9 +24,10 @@ if SAM3_PATH.exists():
 
 # Import SAM3 - GPU-first, no fallback
 SAM3_AVAILABLE = False
+Sam3VideoPredictor = None
 try:
-    from sam3 import build_sam3_video_predictor
-    from sam3.utils.video import VideoReader
+    # Import from model_builder (not exported from top-level sam3/__init__.py)
+    from sam3.model.sam3_video_predictor import Sam3VideoPredictor
     SAM3_AVAILABLE = True
     logger.info("SAM3 loaded successfully")
 except Exception as e:
@@ -63,10 +64,9 @@ class SAM3VideoEngine:
                     f"Please download it first."
                 )
             
-            self.predictor = build_sam3_video_predictor(
-                config_file=self.config,
-                ckpt_path=self.checkpoint_path,
-                device=self.device
+            # Use Sam3VideoPredictor class directly with correct API
+            self.predictor = Sam3VideoPredictor(
+                checkpoint_path=self.checkpoint_path
             )
             
             logger.info("SAM3 model loaded successfully")
@@ -113,23 +113,38 @@ class SAM3VideoEngine:
             int(point[1] * height / 100)
         )
         
-        # Initialize SAM3 inference state
-        inference_state = self.predictor.init_state(video_path=video_path)
+        # Initialize SAM3 session
+        session_result = self.predictor.start_session(resource_path=video_path)
+        session_id = session_result["session_id"]
         
-        # Add point prompt on the specified frame
-        _, out_obj_ids, out_mask_logits = self.predictor.add_new_points(
-            inference_state=inference_state,
-            frame_idx=frame_idx,
-            obj_id=1,
-            points=np.array([[point_px[0], point_px[1]]], dtype=np.float32),
-            labels=np.array([1], dtype=np.int32),  # 1 = foreground
-        )
-        
-        # Propagate through video
-        masks = {}
-        for frame_idx, obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
-            mask = (out_mask_logits[0] > 0).cpu().numpy().astype(np.uint8) * 255
-            masks[frame_idx] = mask
+        try:
+            # Add point prompt on the specified frame using session-based API
+            self.predictor.add_prompt(
+                session_id=session_id,
+                frame_idx=frame_idx,
+                points=[[float(point_px[0]), float(point_px[1])]],
+                point_labels=[1],  # 1 = foreground
+            )
+            
+            # Propagate through video using session-based API
+            masks = {}
+            for result in self.predictor.propagate_in_video(
+                session_id=session_id,
+                propagation_direction="both",
+                start_frame_idx=frame_idx,
+                max_frame_num_to_track=-1,  # -1 = all frames
+            ):
+                frame_index = result["frame_index"]
+                outputs = result["outputs"]
+                # Extract mask from outputs
+                if outputs and len(outputs) > 0:
+                    mask_logits = outputs[0].get("mask", None)
+                    if mask_logits is not None:
+                        mask = (mask_logits > 0).cpu().numpy().astype(np.uint8) * 255
+                        masks[frame_index] = mask
+        finally:
+            # Always close session to free resources
+            self.predictor.close_session(session_id)
         
         # Create masked video
         output_path = str(Path(video_path).parent / f"masked_{Path(video_path).stem}.mp4")
@@ -185,23 +200,37 @@ class SAM3VideoEngine:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
         
-        # Initialize SAM3 inference state
-        inference_state = self.predictor.init_state(video_path=video_path)
+        # Initialize SAM3 session
+        session_result = self.predictor.start_session(resource_path=video_path)
+        session_id = session_result["session_id"]
         
-        # SAM3 text-to-mask (using text prompt directly)
-        # Note: SAM3's text interface may vary - adjust based on actual API
-        _, out_obj_ids, out_mask_logits = self.predictor.add_new_text(
-            inference_state=inference_state,
-            frame_idx=frame_idx,
-            obj_id=1,
-            text=prompt
-        )
-        
-        # Propagate through video
-        masks = {}
-        for frame_idx, obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
-            mask = (out_mask_logits[0] > 0).cpu().numpy().astype(np.uint8) * 255
-            masks[frame_idx] = mask
+        try:
+            # Add text prompt on the specified frame using session-based API
+            self.predictor.add_prompt(
+                session_id=session_id,
+                frame_idx=frame_idx,
+                text=prompt,
+            )
+            
+            # Propagate through video using session-based API
+            masks = {}
+            for result in self.predictor.propagate_in_video(
+                session_id=session_id,
+                propagation_direction="both",
+                start_frame_idx=frame_idx,
+                max_frame_num_to_track=-1,  # -1 = all frames
+            ):
+                frame_index = result["frame_index"]
+                outputs = result["outputs"]
+                # Extract mask from outputs
+                if outputs and len(outputs) > 0:
+                    mask_logits = outputs[0].get("mask", None)
+                    if mask_logits is not None:
+                        mask = (mask_logits > 0).cpu().numpy().astype(np.uint8) * 255
+                        masks[frame_index] = mask
+        finally:
+            # Always close session to free resources
+            self.predictor.close_session(session_id)
         
         # Create highlighted video
         output_path = str(Path(video_path).parent / f"highlighted_{Path(video_path).stem}.mp4")
