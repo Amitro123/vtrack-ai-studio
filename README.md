@@ -27,10 +27,10 @@ Run VTrackAI Studio on free cloud GPUs for 10x faster processing:
 2. Settings → Accelerator → **GPU P100** or **T4 x2**
 3. Add `HF_TOKEN` secret (Add-ons → Secrets)
 4. Enable **Internet** in the sidebar
-5. Run all cells → Copy the ngrok URL
-6. Open the URL in your browser!
+5. Run all cells → Copy the localtunnel URL
+6. Open the URL and click "Click to Continue"
 
-> **Tip**: For longer sessions on Kaggle, add `NGROK_AUTH_TOKEN` secret (free at [ngrok.com](https://ngrok.com))
+> **Note**: Uses localtunnel (free, no signup required)
 
 ## 🌟 Features
 
