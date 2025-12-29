@@ -6,16 +6,31 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104-green?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![SAM3](https://img.shields.io/badge/SAM3-Meta-orange)](https://github.com/facebookresearch/sam3)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Amitro123/vtrack-ai-studio/blob/main/colab/vtrackai_sam3_gpu.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Amitro123/vtrack-ai-studio/blob/main/colab/vtrackai_sam3_gpu_vite.ipynb)
+[![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/Amitro123/vtrack-ai-studio/blob/main/kaggle/vtrackai_sam3_gpu_vite.ipynb)
 
-## 🚀 GPU Backend (Colab)
+## 🚀 GPU Backend (Cloud)
 
-Run the VTrackAI backend on Colab GPU for 10x faster processing:
+Run VTrackAI Studio on free cloud GPUs for 10x faster processing:
 
-1. Click the Colab badge above → Run all cells
-2. Copy the ngrok URL from the output
-3. Set in your local frontend: `VITE_API_URL=<ngrok-url> npm run dev`
-4. Real SAM3 tracking on GPU!
+### Option 1: Google Colab
+
+1. Click the **Open in Colab** badge above
+2. Runtime → Change runtime type → **T4 GPU**
+3. Add `HF_TOKEN` secret (Sidebar → Secrets)
+4. Run all cells → Copy the Cloudflare tunnel URL
+5. Open the URL in your browser!
+
+### Option 2: Kaggle Notebooks
+
+1. Click the **Open in Kaggle** badge above
+2. Settings → Accelerator → **GPU P100** or **T4 x2**
+3. Add `HF_TOKEN` secret (Add-ons → Secrets)
+4. Enable **Internet** in the sidebar
+5. Run all cells → Copy the ngrok URL
+6. Open the URL in your browser!
+
+> **Tip**: For longer sessions on Kaggle, add `NGROK_AUTH_TOKEN` secret (free at [ngrok.com](https://ngrok.com))
 
 ## 🌟 Features
 
