@@ -122,6 +122,7 @@ class SAM3VideoEngine:
             self.predictor.add_prompt(
                 session_id=session_id,
                 frame_idx=frame_idx,
+                obj_id=1,  # Required when providing points
                 points=[[float(point_px[0]), float(point_px[1])]],
                 point_labels=[1],  # 1 = foreground
             )
@@ -209,6 +210,7 @@ class SAM3VideoEngine:
             self.predictor.add_prompt(
                 session_id=session_id,
                 frame_idx=frame_idx,
+                obj_id=1,  # Required for tracking
                 text=prompt,
             )
             
