@@ -18,7 +18,7 @@ import traceback
 logger = logging.getLogger(__name__)
 
 import config
-from sam3_integration import get_sam3_engine, SAM3_AVAILABLE, get_device
+from sam3_integration import get_sam3_engine, SAM3_AVAILABLE, get_device, is_mock_mode
 
 # For audio processing (Librosa - cross-platform)
 try:

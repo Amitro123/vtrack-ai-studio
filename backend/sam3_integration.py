@@ -284,6 +284,35 @@ class SAM3VideoEngine:
             "metadata": result["metadata"]
         }
     
+    def segment_for_removal(
+        self,
+        video_path: str,
+        point: Tuple[float, float],
+        frame_idx: int = 0,
+        mode: str = "fast"
+    ) -> Dict:
+        """
+        Segment object for removal (returns masks without creating output video).
+        Used by servers that do their own inpainting.
+        
+        Args:
+            video_path: Path to video file
+            point: (x, y) in percentage of video dimensions (0-100)
+            frame_idx: Frame index to start from
+            mode: Processing mode ("fast" or "accurate")
+            
+        Returns:
+            {
+                "masks": Dict[int, np.ndarray],
+                "metadata": Dict
+            }
+        """
+        result = self.track_from_point(video_path, point, frame_idx, mode)
+        return {
+            "masks": result["masks"],
+            "metadata": result["metadata"]
+        }
+    
     def _create_masked_video(
         self,
         video_path: str,
@@ -399,3 +428,8 @@ def get_device() -> str:
     if _sam3_engine:
         return _sam3_engine.device
     return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def is_mock_mode() -> bool:
+    """Check if running in mock mode (SAM3 not available)."""
+    return not SAM3_AVAILABLE

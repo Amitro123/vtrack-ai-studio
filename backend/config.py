@@ -19,14 +19,25 @@ CHECKPOINTS_DIR.mkdir(exist_ok=True)
 # Server settings
 HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
 PORT = int(os.getenv("BACKEND_PORT", 8000))
+
+# CORS settings
+# For cloud deployments (Colab/Kaggle with tunnels), allow all origins
+CORS_ALLOW_ALL = os.getenv("CORS_ALLOW_ALL", "false").lower() in ("true", "1", "yes")
+
 CORS_ORIGINS = [
     "http://localhost:5173",  # Vite dev server (default)
     "http://localhost:8080",  # Vite dev server (actual port)
+    "http://localhost:4173",  # Vite preview
     "http://localhost:3000",  # Alternative
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8080",
+    "http://127.0.0.1:4173",
     "http://127.0.0.1:3000",
 ]
+
+# Add tunnel domains if in cloud environment
+if CORS_ALLOW_ALL or "COLAB_GPU" in os.environ or "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
+    CORS_ORIGINS = ["*"]  # Allow all origins for tunnel access
 
 # File upload constraints
 MAX_FILE_SIZE_MB = 100
