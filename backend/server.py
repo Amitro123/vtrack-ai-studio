@@ -139,11 +139,14 @@ async def root():
 @app.get("/api/health")
 async def health():
     """Detailed health check."""
+    import os
+    cache_exists = os.path.exists("sam3_cache")
     is_valid, msg = config.validate_sam3_setup()
     return {
         "status": "healthy",
         "sam3_available": SAM3_AVAILABLE,
         "sam3_setup_valid": is_valid,
+        "sam3_cache_ready": cache_exists,
         "device": get_device(),
         "audio_available": AUDIO_AVAILABLE,
         "upload_dir": str(config.UPLOAD_DIR),
@@ -179,191 +182,100 @@ propagation_sessions: Dict[str, dict] = {}
 
 @app.post("/api/propagate")
 async def propagate_video(
-    video: UploadFile = File(...)
+    file: UploadFile = File(...)
 ):
-    """
-    Step 1: Pre-compute SAM3 features/cache for video.
-    Must be called before /api/track-point with session_id.
-    
-    Args:
-        video: Video file to process
-        
-    Returns:
-        session_id, cache_path, num_frames, metadata
-    """
-    task_id = str(uuid.uuid4())
-    
+    """SAM3 Step 1: Pre-compute video features/cache"""
     try:
+        import os
+        import torch
+        
         # Save uploaded video
-        video_path = config.get_upload_path(f"{task_id}_input.mp4")
-        await save_upload_file(video, video_path)
+        os.makedirs("uploads", exist_ok=True)
+        video_path = f"uploads/{file.filename}"
+        with open(video_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
         
-        # Validate video
-        is_valid, msg = validate_video(str(video_path))
-        if not is_valid:
-            video_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=msg)
+        # Import SAM3 predictor
+        from sam3.sam3_video_predictor import SAM3VideoPredictor
         
-        # Get engine and propagate
-        engine = get_engine()
-        result = engine.propagate_video(str(video_path))
+        predictor = SAM3VideoPredictor.from_pretrained(
+            "checkpoints/sam3/sam3_hiera_large.pt"
+        )
         
-        # Store session info
-        session_id = result["session_id"]
-        propagation_sessions[session_id] = {
-            "video_path": str(video_path),
-            "task_id": task_id,
-            "metadata": result["metadata"]
-        }
+        # Propagation (from official docs)
+        video_frames = predictor.load_video(video_path)
+        inference_session = predictor.init_video(video_frames)
+        
+        # Save cache
+        cache_dir = f"sam3_cache/{file.filename}"
+        os.makedirs(cache_dir, exist_ok=True)
+        torch.save(inference_session, f"{cache_dir}/session.pt")
         
         return {
             "status": "success",
-            "session_id": session_id,
-            "task_id": task_id,
-            "cache_path": result["cache_path"],
-            "num_frames": result["num_frames"],
-            "metadata": result["metadata"],
-            "message": f"Propagation complete. Use session_id for tracking."
+            "cache_id": cache_dir,
+            "message": f"Propagation complete: {len(video_frames)} frames cached"
         }
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error in propagate: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Propagation failed: {str(e)}")
+        logger.error(f"Propagation failed: {e}", exc_info=True)
+        return {"status": "error", "detail": str(e)}
 
 
 @app.post("/api/track-point")
 async def track_point(
-    video: UploadFile = File(None),
-    session_id: str = Form(None),
-    x: float = Form(...),
-    y: float = Form(...),
-    frame_idx: int = Form(0),
-    mode: str = Form("fast")
+    file: UploadFile = File(None),
+    cache_id: str = Form(None),
+    prompt_x: float = Form(0.5),
+    prompt_y: float = Form(0.5),
+    frame_idx: int = Form(0)
 ):
-    """
-    Point-to-Track: Track object from click coordinates using SAM3.
-    
-    Supports two workflows:
-    1. Session-based (recommended): First call /api/propagate, then use session_id
-    2. Legacy: Upload video directly (combines propagate + track)
-    
-    Args:
-        video: Video file (optional if session_id provided)
-        session_id: Session ID from /api/propagate (optional)
-        x: X coordinate (0-100, percentage)
-        y: Y coordinate (0-100, percentage)
-        frame_idx: Frame index for initial click
-        mode: Processing mode ("fast" or "accurate", default "fast")
-        
-    Returns:
-        task_id, masked_video_url, processing_steps
-    """
-    task_id = str(uuid.uuid4())
-    
+    """SAM3 Step 2: Track using pre-computed cache"""
     try:
-        # Validate mode parameter
-        if mode not in ["fast", "accurate"]:
-            raise HTTPException(status_code=400, detail="Mode must be 'fast' or 'accurate'")
+        import os
+        import torch
         
-        engine = get_engine()
+        # Auto-propagate if no cache
+        if not cache_id:
+            if not file:
+                return {"status": "error", "detail": "Either file or cache_id required"}
+            
+            # Save and propagate
+            os.makedirs("uploads", exist_ok=True)
+            video_path = f"uploads/{file.filename}"
+            with open(video_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            
+            from sam3.sam3_video_predictor import SAM3VideoPredictor
+            predictor = SAM3VideoPredictor.from_pretrained("checkpoints/sam3/sam3_hiera_large.pt")
+            
+            video_frames = predictor.load_video(video_path)
+            inference_session = predictor.init_video(video_frames)
+            
+            cache_id = f"sam3_cache/{file.filename}"
+            os.makedirs(cache_id, exist_ok=True)
+            torch.save(inference_session, f"{cache_id}/session.pt")
         
-        # Check if using session-based workflow
-        if session_id and session_id in propagation_sessions:
-            # Session-based workflow: use pre-computed propagation
-            session = propagation_sessions[session_id]
-            video_path = Path(session["video_path"])
-            
-            steps = [
-                {"id": "cache", "label": "Using cached propagation", "status": "complete"},
-                {"id": "track", "label": "SAM3 point tracking", "status": "processing"},
-                {"id": "mask", "label": "Generating mask overlay", "status": "pending"},
-            ]
-            tasks[task_id] = {"steps": steps, "status": "processing"}
-            
-            # Track using session
-            result = engine.track_point(
-                session_id=session_id,
-                point=(x, y),
-                frame_idx=frame_idx
-            )
-            
-            steps[1]["status"] = "complete"
-            steps[2]["status"] = "complete"
-            
-        else:
-            # Legacy workflow: upload video and do full processing
-            if not video:
-                raise HTTPException(
-                    status_code=400, 
-                    detail="Either video file or valid session_id required. Call /api/propagate first for session-based workflow."
-                )
-            
-            # Save uploaded video
-            video_path = config.get_upload_path(f"{task_id}_input.mp4")
-            await save_upload_file(video, video_path)
-            
-            # Validate video
-            is_valid, msg = validate_video(str(video_path))
-            if not is_valid:
-                video_path.unlink(missing_ok=True)
-                raise HTTPException(status_code=400, detail=msg)
-            
-            # Initialize processing steps (SAM3 version)
-            steps = [
-                {"id": "sam3", "label": "SAM3 point tracking", "status": "processing"},
-                {"id": "mask", "label": "Generating mask overlay", "status": "pending"},
-                {"id": "track", "label": "Tracking across frames", "status": "pending"},
-            ]
-            tasks[task_id] = {"steps": steps, "status": "processing"}
-            
-            # Track from point using SAM3 (legacy - combines propagate + track)
-            result = engine.track_from_point(
-                video_path=str(video_path),
-                point=(x, y),
-                frame_idx=frame_idx,
-                mode=mode
-            )
-            
-            steps[0]["status"] = "complete"
-            steps[1]["status"] = "complete"
-            steps[2]["status"] = "complete"
-            
-            # Cleanup input video
-            video_path.unlink(missing_ok=True)
+        # Load cached session
+        from sam3.sam3_video_predictor import SAM3VideoPredictor
+        predictor = SAM3VideoPredictor.from_pretrained("checkpoints/sam3/sam3_hiera_large.pt")
+        inference_session = torch.load(f"{cache_id}/session.pt")
         
-        tasks[task_id]["status"] = "complete"
-        
-        # Get processing parameters for response
-        from config import PROCESSING_FPS_FAST, PROCESSING_FPS_ACCURATE, KEYFRAMES_FAST, KEYFRAMES_ACCURATE
-        processing_fps = PROCESSING_FPS_FAST if mode == "fast" else PROCESSING_FPS_ACCURATE
-        num_keyframes = KEYFRAMES_FAST if mode == "fast" else KEYFRAMES_ACCURATE
+        # Track
+        outputs = predictor.track(
+            inference_session=inference_session,
+            prompt_x=prompt_x,
+            prompt_y=prompt_y,
+            frame_idx=frame_idx
+        )
         
         return {
-            "task_id": task_id,
-            "mode": mode,
-            "sam3_mode": "mock" if is_mock_mode() else "real",
-            "processing_fps": processing_fps,
-            "num_keyframes": num_keyframes,
-            "masked_video_url": f"/uploads/{task_id}/masked_video.mp4",
-            "processing_steps": steps
+            "status": "success",
+            "tracks": outputs,
+            "cache_id": cache_id
         }
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions (400, 404, etc.) as-is
-        raise
     except Exception as e:
-        # Cleanup on error
-        video_path.unlink(missing_ok=True)
-        tasks[task_id] = {"status": "error", "error": str(e)}
-        
-        logger.error(f"Error in track-point: {e}", exc_info=True)
-        
-        raise HTTPException(
-            status_code=500,
-            detail=f"Processing failed: {str(e)}"
-        )
+        logger.error(f"Tracking failed: {e}", exc_info=True)
+        return {"status": "error", "detail": str(e)}
 
 
 @app.post("/api/text-to-video")
