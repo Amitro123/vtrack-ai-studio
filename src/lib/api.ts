@@ -31,10 +31,26 @@ export interface RemoveObjectResponse {
   processing_steps: ProcessingStep[];
 }
 
+export interface PropagateResponse {
+  status: string;
+  session_id: string;
+  task_id: string;
+  cache_path: string;
+  num_frames: number;
+  metadata: {
+    width: number;
+    height: number;
+    fps: number;
+    total_frames: number;
+  };
+  message: string;
+}
+
 export interface HealthResponse {
   status: string;
   sam3_available: boolean;
   sam3_setup_valid: boolean;
+  sam3_initialized: boolean;
   device: string;
   audio_available: boolean;
   upload_dir: string;
@@ -43,7 +59,58 @@ export interface HealthResponse {
 
 export const api = {
   /**
-   * Track object from point click using SAM3
+   * Step 1: Pre-compute SAM3 features for video (propagation)
+   * Call this before trackPointWithSession for better performance
+   */
+  async propagate(video: File): Promise<PropagateResponse> {
+    const formData = new FormData();
+    formData.append('video', video);
+
+    const response = await fetch(`${API_BASE_URL}/api/propagate`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to propagate video');
+    }
+
+    return response.json();
+  },
+
+  /**
+   * Step 2: Track point using pre-computed session (faster)
+   */
+  async trackPointWithSession(
+    sessionId: string,
+    x: number,
+    y: number,
+    frameIdx: number = 0,
+    mode: 'fast' | 'accurate' = 'fast'
+  ): Promise<TrackPointResponse> {
+    const formData = new FormData();
+    formData.append('session_id', sessionId);
+    formData.append('x', x.toString());
+    formData.append('y', y.toString());
+    formData.append('frame_idx', frameIdx.toString());
+    formData.append('mode', mode);
+
+    const response = await fetch(`${API_BASE_URL}/api/track-point`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to track point');
+    }
+
+    return response.json();
+  },
+
+  /**
+   * Track object from point click using SAM3 (legacy - combines propagate + track)
    */
   async trackPoint(
     video: File,
@@ -164,6 +231,16 @@ export const api = {
    */
   async healthCheck(): Promise<any> {
     const response = await fetch(`${API_BASE_URL}/api/health`);
+    return response.json();
+  },
+
+  /**
+   * Warm up SAM3 model (pre-initialize)
+   */
+  async warmup(): Promise<{ status: string; message: string; sam3_initialized: boolean }> {
+    const response = await fetch(`${API_BASE_URL}/api/warmup`, {
+      method: 'POST',
+    });
     return response.json();
   },
 };

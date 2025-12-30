@@ -173,9 +173,70 @@ async def warmup():
         }
 
 
+# In-memory session storage for propagation results
+propagation_sessions: Dict[str, dict] = {}
+
+
+@app.post("/api/propagate")
+async def propagate_video(
+    video: UploadFile = File(...)
+):
+    """
+    Step 1: Pre-compute SAM3 features/cache for video.
+    Must be called before /api/track-point with session_id.
+    
+    Args:
+        video: Video file to process
+        
+    Returns:
+        session_id, cache_path, num_frames, metadata
+    """
+    task_id = str(uuid.uuid4())
+    
+    try:
+        # Save uploaded video
+        video_path = config.get_upload_path(f"{task_id}_input.mp4")
+        await save_upload_file(video, video_path)
+        
+        # Validate video
+        is_valid, msg = validate_video(str(video_path))
+        if not is_valid:
+            video_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=msg)
+        
+        # Get engine and propagate
+        engine = get_engine()
+        result = engine.propagate_video(str(video_path))
+        
+        # Store session info
+        session_id = result["session_id"]
+        propagation_sessions[session_id] = {
+            "video_path": str(video_path),
+            "task_id": task_id,
+            "metadata": result["metadata"]
+        }
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "task_id": task_id,
+            "cache_path": result["cache_path"],
+            "num_frames": result["num_frames"],
+            "metadata": result["metadata"],
+            "message": f"Propagation complete. Use session_id for tracking."
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in propagate: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Propagation failed: {str(e)}")
+
+
 @app.post("/api/track-point")
 async def track_point(
-    video: UploadFile = File(...),
+    video: UploadFile = File(None),
+    session_id: str = Form(None),
     x: float = Form(...),
     y: float = Form(...),
     frame_idx: int = Form(0),
@@ -184,8 +245,13 @@ async def track_point(
     """
     Point-to-Track: Track object from click coordinates using SAM3.
     
+    Supports two workflows:
+    1. Session-based (recommended): First call /api/propagate, then use session_id
+    2. Legacy: Upload video directly (combines propagate + track)
+    
     Args:
-        video: Video file
+        video: Video file (optional if session_id provided)
+        session_id: Session ID from /api/propagate (optional)
         x: X coordinate (0-100, percentage)
         y: Y coordinate (0-100, percentage)
         frame_idx: Frame index for initial click
@@ -201,47 +267,71 @@ async def track_point(
         if mode not in ["fast", "accurate"]:
             raise HTTPException(status_code=400, detail="Mode must be 'fast' or 'accurate'")
         
-        # Save uploaded video
-        video_path = config.get_upload_path(f"{task_id}_input.mp4")
-        await save_upload_file(video, video_path)
-        
-        # Validate video
-        is_valid, msg = validate_video(str(video_path))
-        if not is_valid:
-            video_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=msg)
-        
-        # Initialize processing steps (SAM3 version)
-        steps = [
-            {"id": "sam3", "label": "SAM3 point tracking", "status": "processing"},
-            {"id": "mask", "label": "Generating mask overlay", "status": "pending"},
-            {"id": "track", "label": "Tracking across frames", "status": "pending"},
-        ]
-        
-        tasks[task_id] = {"steps": steps, "status": "processing"}
-        
-        # Get SAM3 engine
         engine = get_engine()
         
-        # Track from point using SAM3
-        result = engine.track_from_point(
-            video_path=str(video_path),
-            point=(x, y),
-            frame_idx=frame_idx,
-            mode=mode
-        )
-        
-        # Update steps
-        steps[0]["status"] = "complete"
-        steps[1]["status"] = "complete"
-        steps[2]["status"] = "complete"
-        
-        # Move output to task directory
-        output_path = config.get_output_path(task_id, "masked_video.mp4")
-        shutil.move(result["masked_video_path"], str(output_path))
-        
-        # Cleanup input video
-        video_path.unlink(missing_ok=True)
+        # Check if using session-based workflow
+        if session_id and session_id in propagation_sessions:
+            # Session-based workflow: use pre-computed propagation
+            session = propagation_sessions[session_id]
+            video_path = Path(session["video_path"])
+            
+            steps = [
+                {"id": "cache", "label": "Using cached propagation", "status": "complete"},
+                {"id": "track", "label": "SAM3 point tracking", "status": "processing"},
+                {"id": "mask", "label": "Generating mask overlay", "status": "pending"},
+            ]
+            tasks[task_id] = {"steps": steps, "status": "processing"}
+            
+            # Track using session
+            result = engine.track_point(
+                session_id=session_id,
+                point=(x, y),
+                frame_idx=frame_idx
+            )
+            
+            steps[1]["status"] = "complete"
+            steps[2]["status"] = "complete"
+            
+        else:
+            # Legacy workflow: upload video and do full processing
+            if not video:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Either video file or valid session_id required. Call /api/propagate first for session-based workflow."
+                )
+            
+            # Save uploaded video
+            video_path = config.get_upload_path(f"{task_id}_input.mp4")
+            await save_upload_file(video, video_path)
+            
+            # Validate video
+            is_valid, msg = validate_video(str(video_path))
+            if not is_valid:
+                video_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail=msg)
+            
+            # Initialize processing steps (SAM3 version)
+            steps = [
+                {"id": "sam3", "label": "SAM3 point tracking", "status": "processing"},
+                {"id": "mask", "label": "Generating mask overlay", "status": "pending"},
+                {"id": "track", "label": "Tracking across frames", "status": "pending"},
+            ]
+            tasks[task_id] = {"steps": steps, "status": "processing"}
+            
+            # Track from point using SAM3 (legacy - combines propagate + track)
+            result = engine.track_from_point(
+                video_path=str(video_path),
+                point=(x, y),
+                frame_idx=frame_idx,
+                mode=mode
+            )
+            
+            steps[0]["status"] = "complete"
+            steps[1]["status"] = "complete"
+            steps[2]["status"] = "complete"
+            
+            # Cleanup input video
+            video_path.unlink(missing_ok=True)
         
         tasks[task_id]["status"] = "complete"
         

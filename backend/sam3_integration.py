@@ -1,7 +1,7 @@
 """
 SAM3 Video Engine Integration
 Unified API for video segmentation and tracking using Meta's SAM3.
-Supports both point and text prompts for open-vocabulary segmentation.
+Supports the two-step workflow: propagate → track.
 GPU-first architecture optimized for Colab/Kaggle deployment.
 """
 
@@ -9,11 +9,10 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional, Any
 import numpy as np
 import cv2
 import torch
-from tqdm import tqdm
 import shutil
 
 logger = logging.getLogger(__name__)
@@ -22,6 +21,10 @@ logger = logging.getLogger(__name__)
 SAM3_PATH = Path(__file__).parent / "sam3"
 if SAM3_PATH.exists():
     sys.path.insert(0, str(SAM3_PATH))
+
+# Cache directory for propagation results
+CACHE_DIR = Path(__file__).parent / "sam3_cache"
+CACHE_DIR.mkdir(exist_ok=True)
 
 # Import SAM3 - GPU-first
 SAM3_AVAILABLE = False
@@ -38,7 +41,7 @@ class SAM3VideoEngine:
     """
     GPU-first SAM3 Video Engine.
     Provides video segmentation and tracking using SAM3.
-    Uses the handle_request API pattern.
+    Supports two-step workflow: propagate → track.
     """
     
     def __init__(
@@ -51,6 +54,7 @@ class SAM3VideoEngine:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.config = config
         self.predictor = None
+        self._active_sessions: Dict[str, Any] = {}  # session_id -> session data
         
         logger.info(f"SAM3VideoEngine initialized (device: {self.device})")
     
@@ -58,39 +62,28 @@ class SAM3VideoEngine:
         """Lazy load SAM3 model."""
         if self.predictor is None:
             logger.info("Loading SAM3 video predictor...")
-            
-            # Build SAM3 video predictor
             self.predictor = build_sam3_video_predictor()
-            
             logger.info("SAM3 model loaded successfully")
     
-    def track_from_point(
-        self,
-        video_path: str,
-        point: Tuple[float, float],
-        frame_idx: int = 0,
-        mode: str = "fast"
-    ) -> Dict:
+    def propagate_video(self, video_path: str) -> Dict:
         """
-        Track object from point prompt in video.
+        Step 1: Pre-compute SAM3 features/cache for video.
+        Must be called before track_point.
         
         Args:
             video_path: Path to video file
-            point: (x, y) in percentage of video dimensions (0-100)
-            frame_idx: Frame index to start from
-            mode: Processing mode ("fast" or "accurate")
             
         Returns:
             {
-                "masked_video_path": str,
-                "masks": Dict[int, np.ndarray],
-                "tracks": List,
+                "session_id": str,
+                "cache_path": str,
+                "num_frames": int,
                 "metadata": Dict
             }
         """
         self._load_model()
         
-        logger.info(f"Tracking from point ({point[0]:.1f}, {point[1]:.1f}) in {video_path} [mode: {mode}]")
+        logger.info(f"Propagating video: {video_path}")
         
         # Read video metadata
         cap = cv2.VideoCapture(video_path)
@@ -99,263 +92,321 @@ class SAM3VideoEngine:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
+        
+        # Generate session ID
+        import hashlib
+        session_id = hashlib.md5(f"{video_path}_{os.path.getmtime(video_path)}".encode()).hexdigest()[:16]
+        
+        # Create cache directory
+        cache_path = CACHE_DIR / session_id
+        cache_path.mkdir(exist_ok=True)
+        
+        with torch.inference_mode():
+            # Start SAM3 session
+            response = self.predictor.handle_request(
+                request=dict(
+                    type="start_session",
+                    resource_path=video_path,
+                )
+            )
+            sam3_session_id = response["session_id"]
+            
+            # Store session info
+            self._active_sessions[session_id] = {
+                "sam3_session_id": sam3_session_id,
+                "video_path": video_path,
+                "cache_path": str(cache_path),
+                "metadata": {
+                    "width": width,
+                    "height": height,
+                    "fps": fps,
+                    "total_frames": total_frames,
+                    "device": self.device
+                }
+            }
+            
+            # Save session info to cache
+            import json
+            with open(cache_path / "session.json", "w") as f:
+                json.dump({
+                    "session_id": session_id,
+                    "sam3_session_id": sam3_session_id,
+                    "video_path": video_path,
+                    "metadata": self._active_sessions[session_id]["metadata"]
+                }, f)
+        
+        logger.info(f"Propagation complete. Session ID: {session_id}")
+        
+        return {
+            "session_id": session_id,
+            "cache_path": str(cache_path),
+            "num_frames": total_frames,
+            "metadata": self._active_sessions[session_id]["metadata"]
+        }
+    
+    def track_point(
+        self,
+        session_id: str,
+        point: Tuple[float, float],
+        frame_idx: int = 0,
+        obj_id: int = 1
+    ) -> Dict:
+        """
+        Step 2: Track point using pre-computed propagation cache.
+        Must call propagate_video first.
+        
+        Args:
+            session_id: Session ID from propagate_video
+            point: (x, y) in percentage of video dimensions (0-100)
+            frame_idx: Frame index for the click
+            obj_id: Object ID for tracking
+            
+        Returns:
+            {
+                "masks": Dict[int, np.ndarray],
+                "masked_video_path": str,
+                "metadata": Dict
+            }
+        """
+        self._load_model()
+        
+        # Load session from cache if not in memory
+        if session_id not in self._active_sessions:
+            cache_path = CACHE_DIR / session_id
+            if not cache_path.exists():
+                raise ValueError(f"Session {session_id} not found. Call propagate_video first.")
+            
+            import json
+            with open(cache_path / "session.json") as f:
+                session_data = json.load(f)
+            
+            # Re-start SAM3 session
+            response = self.predictor.handle_request(
+                request=dict(
+                    type="start_session",
+                    resource_path=session_data["video_path"],
+                )
+            )
+            
+            self._active_sessions[session_id] = {
+                "sam3_session_id": response["session_id"],
+                "video_path": session_data["video_path"],
+                "cache_path": str(cache_path),
+                "metadata": session_data["metadata"]
+            }
+        
+        session = self._active_sessions[session_id]
+        sam3_session_id = session["sam3_session_id"]
+        metadata = session["metadata"]
         
         # Convert percentage to pixel coordinates
         point_px = [
-            point[0] * width / 100,
-            point[1] * height / 100
+            point[0] * metadata["width"] / 100,
+            point[1] * metadata["height"] / 100
         ]
         
-        # Start a session with SAM3
+        logger.info(f"Tracking point ({point[0]:.1f}, {point[1]:.1f}) in session {session_id}")
+        
+        masks = {}
+        
         with torch.inference_mode():
-            # Start session
+            # Add point prompt
             response = self.predictor.handle_request(
                 request=dict(
-                    type="start_session",
-                    resource_path=video_path,
+                    type="add_prompt",
+                    session_id=sam3_session_id,
+                    frame_index=frame_idx,
+                    obj_id=obj_id,
+                    points=[point_px],
+                    point_labels=[1],  # 1 = foreground
                 )
             )
-            session_id = response["session_id"]
             
-            try:
-                # Add point prompt
-                response = self.predictor.handle_request(
-                    request=dict(
-                        type="add_prompt",
-                        session_id=session_id,
-                        frame_index=frame_idx,
-                        obj_id=1,
-                        points=[point_px],
-                        point_labels=[1],  # 1 = foreground
-                    )
+            # Get initial mask
+            if "outputs" in response and response["outputs"]:
+                for output in response["outputs"]:
+                    frame_index = output.get("frame_index", frame_idx)
+                    mask_data = output.get("mask", output.get("masks", None))
+                    if mask_data is not None:
+                        mask = self._process_mask(mask_data)
+                        masks[frame_index] = mask
+            
+            # Propagate through video
+            response = self.predictor.handle_request(
+                request=dict(
+                    type="propagate_in_video",
+                    session_id=sam3_session_id,
+                    start_frame_idx=frame_idx,
                 )
-                
-                # Get masks from outputs
-                masks = {}
-                if "outputs" in response and response["outputs"]:
-                    for output in response["outputs"]:
-                        frame_index = output.get("frame_index", frame_idx)
-                        mask_data = output.get("mask", output.get("masks", None))
-                        if mask_data is not None:
-                            if torch.is_tensor(mask_data):
-                                mask = (mask_data > 0).cpu().numpy().squeeze().astype(np.uint8) * 255
-                            else:
-                                mask = (np.array(mask_data) > 0).astype(np.uint8) * 255
-                            masks[frame_index] = mask
-                
-                # Propagate through video
-                response = self.predictor.handle_request(
-                    request=dict(
-                        type="propagate_in_video",
-                        session_id=session_id,
-                        start_frame_idx=frame_idx,
-                    )
-                )
-                
-                # Collect propagated masks
-                if "outputs" in response:
-                    for output in response["outputs"]:
-                        frame_index = output.get("frame_index")
-                        mask_data = output.get("mask", output.get("masks", None))
-                        if frame_index is not None and mask_data is not None:
-                            if torch.is_tensor(mask_data):
-                                mask = (mask_data > 0).cpu().numpy().squeeze().astype(np.uint8) * 255
-                            else:
-                                mask = (np.array(mask_data) > 0).astype(np.uint8) * 255
-                            masks[frame_index] = mask
-                
-            finally:
-                # Close session
-                self.predictor.handle_request(
-                    request=dict(
-                        type="close_session",
-                        session_id=session_id,
-                    )
-                )
+            )
+            
+            # Collect propagated masks
+            if "outputs" in response:
+                for output in response["outputs"]:
+                    frame_index = output.get("frame_index")
+                    mask_data = output.get("mask", output.get("masks", None))
+                    if frame_index is not None and mask_data is not None:
+                        mask = self._process_mask(mask_data)
+                        masks[frame_index] = mask
         
         # Create masked video
+        video_path = session["video_path"]
         output_path = str(Path(video_path).parent / f"masked_{Path(video_path).stem}.mp4")
-        self._create_masked_video(video_path, masks, output_path, fps, width, height)
+        self._create_masked_video(
+            video_path, masks, output_path,
+            metadata["fps"], metadata["width"], metadata["height"]
+        )
         
         return {
-            "masked_video_path": output_path,
             "masks": masks,
-            "tracks": [],
-            "metadata": {
-                "width": width,
-                "height": height,
-                "fps": fps,
-                "total_frames": total_frames,
-                "device": self.device
-            }
+            "masked_video_path": output_path,
+            "metadata": metadata
         }
     
-    def track_from_text(
+    def track_text(
         self,
-        video_path: str,
+        session_id: str,
         prompt: str,
         frame_idx: int = 0,
-        mode: str = "fast"
+        obj_id: int = 1
     ) -> Dict:
         """
-        Track object from text prompt in video using SAM3's native text understanding.
+        Track object from text prompt using pre-computed propagation cache.
         
         Args:
-            video_path: Path to video file
-            prompt: Text description (e.g., "drummer", "person on the left")
-            frame_idx: Frame index to start from
-            mode: Processing mode ("fast" or "accurate")
+            session_id: Session ID from propagate_video
+            prompt: Text description
+            frame_idx: Frame index for the prompt
+            obj_id: Object ID for tracking
             
         Returns:
             {
-                "highlighted_video_path": str,
                 "masks": Dict[int, np.ndarray],
-                "tracks": List,
-                "detected_objects": List,
+                "highlighted_video_path": str,
                 "metadata": Dict
             }
         """
         self._load_model()
         
-        logger.info(f"Tracking from text prompt: '{prompt}' in {video_path} [mode: {mode}]")
-        
-        # Read video metadata
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
-        
-        # Start a session with SAM3
-        with torch.inference_mode():
-            # Start session
+        # Load session
+        if session_id not in self._active_sessions:
+            cache_path = CACHE_DIR / session_id
+            if not cache_path.exists():
+                raise ValueError(f"Session {session_id} not found. Call propagate_video first.")
+            
+            import json
+            with open(cache_path / "session.json") as f:
+                session_data = json.load(f)
+            
             response = self.predictor.handle_request(
                 request=dict(
                     type="start_session",
-                    resource_path=video_path,
+                    resource_path=session_data["video_path"],
                 )
             )
-            session_id = response["session_id"]
             
+            self._active_sessions[session_id] = {
+                "sam3_session_id": response["session_id"],
+                "video_path": session_data["video_path"],
+                "cache_path": str(cache_path),
+                "metadata": session_data["metadata"]
+            }
+        
+        session = self._active_sessions[session_id]
+        sam3_session_id = session["sam3_session_id"]
+        metadata = session["metadata"]
+        
+        logger.info(f"Tracking text '{prompt}' in session {session_id}")
+        
+        masks = {}
+        
+        with torch.inference_mode():
+            # Add text prompt
+            response = self.predictor.handle_request(
+                request=dict(
+                    type="add_prompt",
+                    session_id=sam3_session_id,
+                    frame_index=frame_idx,
+                    obj_id=obj_id,
+                    text=prompt,
+                )
+            )
+            
+            # Get initial mask
+            if "outputs" in response and response["outputs"]:
+                for output in response["outputs"]:
+                    frame_index = output.get("frame_index", frame_idx)
+                    mask_data = output.get("mask", output.get("masks", None))
+                    if mask_data is not None:
+                        mask = self._process_mask(mask_data)
+                        masks[frame_index] = mask
+            
+            # Propagate
+            response = self.predictor.handle_request(
+                request=dict(
+                    type="propagate_in_video",
+                    session_id=sam3_session_id,
+                    start_frame_idx=frame_idx,
+                )
+            )
+            
+            if "outputs" in response:
+                for output in response["outputs"]:
+                    frame_index = output.get("frame_index")
+                    mask_data = output.get("mask", output.get("masks", None))
+                    if frame_index is not None and mask_data is not None:
+                        mask = self._process_mask(mask_data)
+                        masks[frame_index] = mask
+        
+        # Create highlighted video
+        video_path = session["video_path"]
+        output_path = str(Path(video_path).parent / f"highlighted_{Path(video_path).stem}.mp4")
+        self._create_masked_video(
+            video_path, masks, output_path,
+            metadata["fps"], metadata["width"], metadata["height"]
+        )
+        
+        return {
+            "masks": masks,
+            "highlighted_video_path": output_path,
+            "detected_objects": [{"label": prompt, "confidence": 1.0}],
+            "metadata": metadata
+        }
+    
+    def close_session(self, session_id: str):
+        """Close a propagation session and free resources."""
+        if session_id in self._active_sessions:
+            session = self._active_sessions[session_id]
             try:
-                # Add text prompt - SAM3's native text understanding
-                response = self.predictor.handle_request(
-                    request=dict(
-                        type="add_prompt",
-                        session_id=session_id,
-                        frame_index=frame_idx,
-                        text=prompt,
-                    )
-                )
-                
-                # Get masks from outputs
-                masks = {}
-                if "outputs" in response and response["outputs"]:
-                    for output in response["outputs"]:
-                        frame_index = output.get("frame_index", frame_idx)
-                        mask_data = output.get("mask", output.get("masks", None))
-                        if mask_data is not None:
-                            if torch.is_tensor(mask_data):
-                                mask = (mask_data > 0).cpu().numpy().squeeze().astype(np.uint8) * 255
-                            else:
-                                mask = (np.array(mask_data) > 0).astype(np.uint8) * 255
-                            masks[frame_index] = mask
-                
-                # Propagate through video
-                response = self.predictor.handle_request(
-                    request=dict(
-                        type="propagate_in_video",
-                        session_id=session_id,
-                        start_frame_idx=frame_idx,
-                    )
-                )
-                
-                # Collect propagated masks
-                if "outputs" in response:
-                    for output in response["outputs"]:
-                        frame_index = output.get("frame_index")
-                        mask_data = output.get("mask", output.get("masks", None))
-                        if frame_index is not None and mask_data is not None:
-                            if torch.is_tensor(mask_data):
-                                mask = (mask_data > 0).cpu().numpy().squeeze().astype(np.uint8) * 255
-                            else:
-                                mask = (np.array(mask_data) > 0).astype(np.uint8) * 255
-                            masks[frame_index] = mask
-                
-            finally:
-                # Close session
                 self.predictor.handle_request(
                     request=dict(
                         type="close_session",
-                        session_id=session_id,
+                        session_id=session["sam3_session_id"],
                     )
                 )
-        
-        # Create highlighted video
-        output_path = str(Path(video_path).parent / f"highlighted_{Path(video_path).stem}.mp4")
-        self._create_masked_video(video_path, masks, output_path, fps, width, height)
-        
-        return {
-            "highlighted_video_path": output_path,
-            "masks": masks,
-            "tracks": [],
-            "detected_objects": [{"label": prompt, "confidence": 1.0}],
-            "metadata": {
-                "width": width,
-                "height": height,
-                "fps": fps,
-                "total_frames": total_frames,
-                "device": self.device
-            }
-        }
+            except Exception as e:
+                logger.warning(f"Error closing SAM3 session: {e}")
+            del self._active_sessions[session_id]
     
-    def segment_for_removal(
-        self,
-        video_path: str,
-        point: Tuple[float, float],
-        frame_idx: int = 0,
-        mode: str = "fast"
-    ) -> Dict:
-        """
-        Segment object for removal (returns masks without creating output video).
-        
-        Args:
-            video_path: Path to video file
-            point: (x, y) in percentage of video dimensions (0-100)
-            frame_idx: Frame index to start from
-            mode: Processing mode ("fast" or "accurate")
-            
-        Returns:
-            {
-                "masks": Dict[int, np.ndarray],
-                "metadata": Dict
-            }
-        """
-        result = self.track_from_point(video_path, point, frame_idx, mode)
-        return {
-            "masks": result["masks"],
-            "metadata": result["metadata"]
-        }
+    def _process_mask(self, mask_data) -> np.ndarray:
+        """Process mask data to numpy array."""
+        if torch.is_tensor(mask_data):
+            mask = (mask_data > 0).cpu().numpy().squeeze().astype(np.uint8) * 255
+        else:
+            mask = (np.array(mask_data) > 0).astype(np.uint8) * 255
+        return mask
     
     def _create_masked_video(
         self,
         video_path: str,
         masks: Dict[int, np.ndarray],
         output_path: str,
-        fps: float = None,
-        width: int = None,
-        height: int = None
+        fps: float,
+        width: int,
+        height: int
     ):
         """Create video with mask overlay."""
         cap = cv2.VideoCapture(video_path)
-        if fps is None:
-            fps = cap.get(cv2.CAP_PROP_FPS)
-        if width is None:
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        if height is None:
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
@@ -384,16 +435,50 @@ class SAM3VideoEngine:
         cap.release()
         out.release()
         logger.info(f"Created masked video: {output_path}")
+    
+    # Legacy methods for backwards compatibility
+    def track_from_point(self, video_path: str, point: Tuple[float, float], frame_idx: int = 0, mode: str = "fast") -> Dict:
+        """Legacy method - combines propagate + track."""
+        result = self.propagate_video(video_path)
+        session_id = result["session_id"]
+        try:
+            track_result = self.track_point(session_id, point, frame_idx)
+            return {
+                "masked_video_path": track_result["masked_video_path"],
+                "masks": track_result["masks"],
+                "tracks": [],
+                "metadata": track_result["metadata"]
+            }
+        finally:
+            self.close_session(session_id)
+    
+    def track_from_text(self, video_path: str, prompt: str, frame_idx: int = 0, mode: str = "fast") -> Dict:
+        """Legacy method - combines propagate + track."""
+        result = self.propagate_video(video_path)
+        session_id = result["session_id"]
+        try:
+            track_result = self.track_text(session_id, prompt, frame_idx)
+            return {
+                "highlighted_video_path": track_result["highlighted_video_path"],
+                "masks": track_result["masks"],
+                "tracks": [],
+                "detected_objects": track_result["detected_objects"],
+                "metadata": track_result["metadata"]
+            }
+        finally:
+            self.close_session(session_id)
+    
+    def segment_for_removal(self, video_path: str, point: Tuple[float, float], frame_idx: int = 0, mode: str = "fast") -> Dict:
+        """Legacy method for removal."""
+        result = self.track_from_point(video_path, point, frame_idx, mode)
+        return {"masks": result["masks"], "metadata": result["metadata"]}
 
 
 # Singleton instance
 _sam3_engine = None
 
 def get_sam3_engine(checkpoint_path: str = None, device: str = None) -> SAM3VideoEngine:
-    """
-    Get or create SAM3 engine singleton.
-    GPU-first: uses CUDA if available, falls back to CPU.
-    """
+    """Get or create SAM3 engine singleton."""
     global _sam3_engine
     if _sam3_engine is None:
         if not SAM3_AVAILABLE:
