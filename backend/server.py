@@ -61,6 +61,7 @@ tasks: Dict[str, dict] = {}
 
 # Initialize SAM3 engine (lazy loading)
 sam3_engine = None
+sam3_initialized = False  # Track if warm-up has been done
 
 def get_engine():
     """Get or create SAM3 engine."""
@@ -71,6 +72,26 @@ def get_engine():
             device=config.DEVICE
         )
     return sam3_engine
+
+
+def initialize_sam3_cache():
+    """
+    Pre-initialize SAM3 model to warm up the cache.
+    This reduces latency on the first real request.
+    """
+    global sam3_initialized
+    if sam3_initialized:
+        return
+    
+    try:
+        logger.info("🔥 Warming up SAM3 model...")
+        engine = get_engine()
+        # Just loading the model is enough to initialize it
+        engine._load_model()
+        sam3_initialized = True
+        logger.info("✅ SAM3 warm-up complete")
+    except Exception as e:
+        logger.warning(f"SAM3 warm-up failed: {e}")
 
 
 async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
@@ -126,8 +147,30 @@ async def health():
         "device": get_device(),
         "audio_available": AUDIO_AVAILABLE,
         "upload_dir": str(config.UPLOAD_DIR),
-        "active_tasks": len(tasks)
+        "active_tasks": len(tasks),
+        "sam3_initialized": sam3_initialized
     }
+
+
+@app.post("/api/warmup")
+async def warmup():
+    """
+    Pre-initialize SAM3 model to warm up the cache.
+    Call this after backend starts to reduce first-request latency.
+    """
+    try:
+        initialize_sam3_cache()
+        return {
+            "status": "ok",
+            "message": "SAM3 warm-up complete",
+            "sam3_initialized": sam3_initialized
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "sam3_initialized": sam3_initialized
+        }
 
 
 @app.post("/api/track-point")
